@@ -1,0 +1,11 @@
+[package]
+name = "main_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+quantum = { path = "../quantum" }
+crypto = { path = "../crypto" }
+detection = { path = "../detection" }
+attacks = { path = "../attacks" }
+rand = "0.8.5"

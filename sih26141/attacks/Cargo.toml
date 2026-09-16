@@ -1,0 +1,8 @@
+[package]
+name = "attacks"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+quantum = { path = "../quantum" }
+rand = "0.8.5"

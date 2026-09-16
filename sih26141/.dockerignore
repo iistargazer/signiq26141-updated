@@ -1,0 +1,10 @@
+# Keep the Docker build context small (the Dockerfile copies the tree).
+target/
+frontend/node_modules/
+frontend/dist/
+.git/
+.freebuff/
+audit_log.jsonl
+qds_events.jsonl
+users.json
+*.log

@@ -1,0 +1,28 @@
+# Render Blueprint — deploys the whole stack as ONE web service:
+# the Rust API server + the built React dashboard behind the same URL.
+#
+# Deploy: Render dashboard → New → Blueprint → point at this repo → Apply.
+# Afterwards every laptop just opens https://<service>.onrender.com
+#
+# The optional persistent disk keeps users.json / audit_log.jsonl /
+# qds_events.jsonl across deploys and restarts (free tier has no disk —
+# accounts and ledgers reset when the service restarts, which is fine for
+# a demo, just re-register the three accounts).
+services:
+  - type: web
+    name: sih26141-quantum-pipeline
+    runtime: docker
+    plan: starter # swap to "free" for a zero-cost demo (cold starts + no disk)
+    healthCheckPath: /api/health
+    autoDeploy: true
+    # 5 MB documents → ~9 MB JSON request bodies; Render's proxy allows
+    # larger bodies than the server's own 12 MB cap, so no extra config.
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: HOST
+        value: 0.0.0.0
+    disk: # optional: accounts + ledgers persist across restarts
+      name: sih26141-data
+      mountPath: /data
+      sizeGB: 1
