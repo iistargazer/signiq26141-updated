@@ -26,9 +26,24 @@ pub struct QdsState {
 }
 
 impl QdsState {
+    /// `TRENT_SEED`, if set, pins the notary's correlation tables so every
+    /// laptop running with the SAME seed derives the SAME Trent — a
+    /// signature made on laptop A then verifies on laptop B. Unset → fresh
+    /// entropy (single-server deployments never need to match another Trent).
     pub fn new(qubit_count: usize, lambda: usize, log_path: PathBuf) -> Self {
-        let mut rng = rand::rngs::StdRng::from_entropy();
-        let trent = Trent::setup(qubit_count, lambda, &mut rng);
+        let trent = match std::env::var("TRENT_SEED")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            Some(seed) => {
+                let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+                Trent::setup(qubit_count, lambda, &mut rng)
+            }
+            None => {
+                let mut rng = rand::rngs::StdRng::from_entropy();
+                Trent::setup(qubit_count, lambda, &mut rng)
+            }
+        };
         Self {
             trent: Mutex::new(trent),
             log_path,

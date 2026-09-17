@@ -92,7 +92,7 @@ export function AuthBar({
   if (user) {
     return (
       <div className="auth-bar">
-        <span className="chip chip-green">👤 {user}</span>
+        <span className="chip chip-green">{user}</span>
         <span className="dim">your keys, seals and inbox are private to this account</span>
         <button className="btn btn-sm" onClick={logout} disabled={busy}>
           log out
@@ -129,7 +129,7 @@ export function AuthBar({
       <button className="btn btn-sm" onClick={() => doAuth('register')} disabled={busy}>
         register
       </button>
-      {error && <span className="auth-error">⚠ {error}</span>}
+      {error && <span className="auth-error">{error}</span>}
     </div>
   )
 }

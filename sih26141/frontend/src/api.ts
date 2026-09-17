@@ -93,22 +93,27 @@ export function base(): string {
 const TOKEN_KEY = 'qsig_token'
 const USER_KEY = 'qsig_username'
 
+// Per-tab sessions: the token lives in sessionStorage so two tabs in one
+// browser can hold two DIFFERENT accounts (alice's tab + bob's tab on the
+// same laptop for the two-user demo). LocalStorage would share one identity
+// across tabs and made the second login silently switch the first tab.
+
 export function getAuthToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY)
+  return sessionStorage.getItem(TOKEN_KEY)
 }
 
 export function getAuthUsername(): string | null {
-  return localStorage.getItem(USER_KEY)
+  return sessionStorage.getItem(USER_KEY)
 }
 
 export function setAuthSession(token: string, username: string) {
-  localStorage.setItem(TOKEN_KEY, token)
-  localStorage.setItem(USER_KEY, username)
+  sessionStorage.setItem(TOKEN_KEY, token)
+  sessionStorage.setItem(USER_KEY, username)
 }
 
 export function clearAuthSession() {
-  localStorage.removeItem(TOKEN_KEY)
-  localStorage.removeItem(USER_KEY)
+  sessionStorage.removeItem(TOKEN_KEY)
+  sessionStorage.removeItem(USER_KEY)
 }
 
 /** Authorization header for the logged-in user (empty when anonymous). */
@@ -403,6 +408,10 @@ export interface SealResponse {
   key_commitment: string
   quorum: [number, number] | null
   officer_commitments: string[]
+  /** Provenance of the sealing key ("six-state-qds" | "qkd-legacy"). */
+  key_source: string
+  /** Whether the teleport-QDS signature was attached and verified. */
+  qds_signature: boolean
   audit_seq: number
   audit_root?: string
   audit_warning?: string
@@ -499,6 +508,8 @@ export interface PeerSendResponse {
   peer_item_id: number | null
   peer_note: string | null
   sha256: string
+  /** The sender's outbox record id (their copy of the sent container). */
+  outbox_id: number
   audit_seq: number
   audit_warning?: string
   summary: string
@@ -589,9 +600,134 @@ export interface AttackResponse {
 
 export type AttackMode = 'tamper_bytes' | 'swap_meta' | 'reseal' | 'truncate'
 
+export interface OutboxItem {
+  id: number
+  sent_at: string
+  to_peer: string
+  via: 'local' | 'laptop' | 'relay' | string
+  meta: { name: string; size: number; mime: string; sha256: string; sealed_at: string }
+  container_b64: string
+  delivered: boolean
+  claim_code?: string | null
+  summary: string
+}
+
+export interface OutboxListResponse {
+  items: OutboxItem[]
+  total: number
+}
+
+export interface QdsKeyResponse {
+  key_commitment: string
+  session_commitment: string
+  session_id: number
+  nonce: number
+  n_pulses: number
+  conclusive_bits: number
+  mismatch_rate: number
+  provenance: string
+  audit_seq: number
+  audit_warning?: string
+}
+
+export interface QdsCheckReport {
+  accepted: boolean
+  verdict: string
+  match_ratio: number
+  mismatches: number
+  total_positions: number
+  evaluated?: boolean
+  reason: string
+}
+
+export interface OpenResponse {
+  content_b64: string
+  name: string
+  mime: string
+  size: number
+  sha256: string
+  outcome: VerificationOutcome
+  qds_check: QdsCheckReport | null
+  unlocked_via: string
+  audit_seq: number
+  audit_warning?: string
+}
+
+export interface WireProof {
+  doc_name: string
+  doc_sha256: string
+  doc_size: number
+  wire_bytes: number
+  ciphertext_sample_hex: string
+  ciphertext_entropy: number
+  encryption_scheme: string
+  key_commitment: string
+  qds_signature_attached: boolean
+  transport: string
+  verdict: string
+}
+
+export interface TheaterStep {
+  step: number
+  title: string
+  actor: string
+  detail: string
+  level: string
+  evidence: Record<string, unknown>
+}
+
+export interface TheaterResponse {
+  theater_id: number
+  mode: string
+  victim: string
+  steps: TheaterStep[]
+  victim_verdict: VerificationOutcome
+  qds_verdict: QdsCheckReport | null
+  rejected: boolean
+  wire: WireProof
+  audit_seq: number
+  audit_warning?: string
+}
+
+export interface RelayDepositResponse {
+  claim_code: string
+  relay_note: string
+  expires_note: string
+  audit_seq: number
+  audit_warning?: string
+}
+
+export interface RelayClaimResponse {
+  accepted: boolean
+  item_id: number | null
+  meta: { name: string; size: number; mime: string; sha256: string; sealed_at: string } | null
+  from_peer: string | null
+  note: string
+  audit_seq: number
+  audit_warning?: string
+}
+
+export interface RelayDepositInfo {
+  code: string
+  from: string
+  name: string
+  size: number
+  sha256: string
+  deposited_at: string
+}
+
 export const docApi = {
   session: (): Promise<SessionInfo> =>
     fetch(`${base()}/api/doc/session`, { headers: authHeaders() }).then((r) => r.json()),
+  /** Derive this user's sealing key from a fresh six-state QDS session. */
+  qdsKey: (): Promise<QdsKeyResponse> =>
+    jsonFetch<QdsKeyResponse>('/api/doc/qds/key', {}),
+  /** Unlock a sealed container and recover the ORIGINAL file bytes. */
+  open: (params: {
+    container_b64?: string
+    inbox_id?: number
+    outbox_id?: number
+  }): Promise<OpenResponse> => jsonFetch<OpenResponse>('/api/doc/open', params),
   seal: (params: {
     name: string
     content_b64: string
@@ -656,9 +792,59 @@ export const docApi = {
   inboxVerify: (id: number): Promise<VerifyResponse> =>
     jsonFetch<VerifyResponse>('/api/doc/inbox/verify', { id }),
   inboxDelete: (id: number): Promise<{ deleted: number }> =>
-    fetch(`${base()}/api/doc/inbox/${id}`, { method: 'DELETE' }).then((r) => {
+    fetch(`${base()}/api/doc/inbox/${id}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    }).then((r) => {
       if (!r.ok) throw new Error(`delete failed (HTTP ${r.status})`)
       return r.json()
+    }),
+  outbox: (): Promise<OutboxListResponse> =>
+    fetch(`${base()}/api/doc/outbox`, { headers: authHeaders() }).then((r) => {
+      if (!r.ok) throw new Error(`outbox requires login (HTTP ${r.status})`)
+      return r.json()
+    }),
+  outboxDelete: (id: number): Promise<{ deleted: number }> =>
+    fetch(`${base()}/api/doc/outbox/${id}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    }).then((r) => {
+      if (!r.ok) throw new Error(`delete failed (HTTP ${r.status})`)
+      return r.json()
+    }),
+  wireProof: (ref: { inbox_id?: number; outbox_id?: number }): Promise<WireProof> => {
+    const q = new URLSearchParams()
+    if (ref.inbox_id !== undefined) q.set('inbox_id', String(ref.inbox_id))
+    if (ref.outbox_id !== undefined) q.set('outbox_id', String(ref.outbox_id))
+    return fetch(`${base()}/api/doc/wire-proof?${q.toString()}`, { headers: authHeaders() }).then(
+      (r) => {
+        if (!r.ok) throw new Error(`wire proof failed (HTTP ${r.status})`)
+        return r.json()
+      },
+    )
+  },
+  attackTheater: (params: {
+    container_b64: string
+    mode?: AttackMode
+    victim?: string
+    attacker?: string
+  }): Promise<TheaterResponse> => jsonFetch<TheaterResponse>('/api/doc/attack-theater', params),
+  relayDeposit: (params: {
+    container_b64: string
+    to_user: string
+    from_label?: string
+  }): Promise<RelayDepositResponse> => jsonFetch<RelayDepositResponse>('/api/doc/relay/deposit', params),
+  relayClaim: (claim_code: string): Promise<RelayClaimResponse> =>
+    jsonFetch<RelayClaimResponse>('/api/doc/relay/claim', { claim_code }),
+  relayInbox: (): Promise<{ deposits: RelayDepositInfo[]; total: number }> =>
+    fetch(`${base()}/api/doc/relay/inbox`, { headers: authHeaders() }).then((r) => r.json()),
+}
+
+export const auditClearApi = {
+  clear: (developerToken: string): Promise<{ cleared: boolean; genesis_seq: number }> =>
+    jsonFetch<{ cleared: boolean; genesis_seq: number }>('/api/audit/clear', {
+      developer_token: developerToken,
+      confirm: 'CLEAR',
     }),
 }
 

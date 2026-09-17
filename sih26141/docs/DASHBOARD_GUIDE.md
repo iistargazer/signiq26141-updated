@@ -193,10 +193,13 @@ secret was distilled.
 
 ## 8. ⚛ QDS Signature Lab (the deep section)
 
-The teleportation-based Quantum Digital Signature lab. Five numbered
-steps, top to bottom. Participants: **Trent** (notary/distribution
-center), **Alice** (signer), **Bob** (verifier), **Charlie** (second
-verifier for transferability). Formal math: `QDS_MATH_MODEL.md`.
+The teleportation-based Quantum Digital Signature lab. **Six numbered
+steps**, top to bottom: ① generate keys → ② sign via teleportation →
+③ verify (play the verifier) → ④ launch all 5 attacks → ⑤ forgery
+probability analysis → ⑥ performance evaluation. Participants: **Trent**
+(notary/distribution center), **Alice** (signer), **Bob** (verifier),
+**Charlie** (second verifier for transferability). Formal math:
+`QDS_MATH_MODEL.md`.
 
 ### 8.1 Step ① — "Generate quantum keys"
 
@@ -230,9 +233,25 @@ correction. She publishes two signature bits per position:
 | **`128 signature bits`** | 2 published bits × 64 positions. |
 | **Teleportation trace table** | The actual teleportation log, first 6 qubits: **qubit** = position; **Bell outcome** = the 2-bit measurement result (00/01/10/11, uniformly random — the signature's randomness source); **Pauli correction** = what Bob applies (I/X/Z/XZ, mapped from the outcome); **raw bit** = Bob's bit *before* correction; **corrected** = after — always equals the intended payload (ideal teleportation; watch raw flip exactly when the correction is X or ZX). |
 | **Signature (correction bits)** | The published signature as hex (0/1 bytes): 128 bits. **Bound to the message** — change one character of the message and re-sign: the signature is completely different (the message-hash bits feed every position). |
-| **Tamper fraction slider (0–100%, default 50%)** | Controls scenario ③'s channel-tampering attack: what fraction of teleported qubits Eve disturbs in flight. Each disturbed position flips one published bit, so mismatches scale ∝ fraction (0% → 0 mismatches and the tampered signature is honestly *accepted* — no disturbance, no false alarm; 100% → every position mismatches). |
 
-### 8.3 Step ③ — "Launch all 5 attacks"
+### 8.3 Step ③ — "Verify (play the verifier)"
+
+New in this build — the lab no longer just asserts "Bob verified" on
+delivery; **you verify signatures yourself** against the live pipeline,
+two buttons:
+
+| Element | Meaning |
+|---|---|
+| **`verify genuine signature`** | Re-submits the untouched signature under a fresh nonce. Expect green: `accepted`, verdict **1-ACC**, `0/64 positions mismatched · 100% match`. This is the positive control — the same signature that just passed Bob's delivery check passes the standalone verifier too. |
+| **`verify tampered copy`** | Flips one published correction bit and re-verifies. Expect red: verdict **REJ**, a large mismatch fraction (one flipped bit breaks that position's verification equation; the measured ratio shows the statistics that rejected it). This is the negative control — the math, not a flag, does the rejecting. |
+| **Statistics line** | `mismatches/total positions · match % · threshold c1/c2 decides the verdict` — the same measurement-report evidence the attack rows show, now on demand. |
+
+**Demo move:** run ③ genuine → green, then ③ tampered → red, back to
+back. Ten seconds, and the audience has seen both sides of the threshold
+rule with real numbers. Every verification (both buttons) is appended to
+the JSONL event log and the Merkle ledger.
+
+### 8.4 Step ④ — "Launch all 5 attacks"
 
 Runs all five threat classes from the problem statement against the last
 genuine signature, each verified through the same `qds::verify` pipeline
@@ -267,7 +286,7 @@ fresh nonces deliberately so their *statistical* failure modes are
 visible rather than masked by the nonce check — five rows, five distinct
 teachable failure reasons.
 
-### 8.4 Step ④ — Forgery probability analysis
+### 8.5 Step ⑤ — Forgery probability analysis
 
 **What happens on click:** `GET /api/qds/forgery-analysis` — a
 20,000-trial Monte-Carlo at small parameters (q=8, λ=1) plus the theory
@@ -282,7 +301,7 @@ curve.
 This panel is **deliberately static** — it plots a theory curve; it
 doesn't respond to the other controls (that's by design, not a bug).
 
-### 8.5 Step ⑤ — Performance evaluation (Lap 2 metrics)
+### 8.6 Step ⑥ — Performance evaluation (Lap 2 metrics)
 
 **What happens on click:** `GET /api/qds/metrics?trials=200&seed=42` —
 the repeatable evaluation engine over **both** QDS schemes (the
@@ -303,7 +322,7 @@ seed=42) — clicking it twice gives identical numbers, which is the point:
 an evaluation an auditor can reproduce. The event log records each
 evaluation run.
 
-### 8.6 "Theoretical basis & references" (collapsible)
+### 8.7 "Theoretical basis & references" (collapsible)
 
 Maps every mechanism to its paper: Gottesman–Chuang 2001 (verdict
 semantics 1-ACC/0-ACC/REJ, transferability), Singh et al. 2023
@@ -311,8 +330,6 @@ semantics 1-ACC/0-ACC/REJ, transferability), Singh et al. 2023
 resistance), Weng et al. 2021 (six-state encoding, mismatch-rate
 thresholds — implemented as the second full scheme). Good "where's the
 literature?" moment.
-
----
 
 ---
 
@@ -331,6 +348,7 @@ features 3, 7, 5.
 | **Dropzone** | Pick any file (PDF/image/text). Shows its name + size once loaded. |
 | **Shamir quorum seal** (toggle) | Off = seal under the raw session key. On = split the key k-of-m first: two selects appear (threshold k 2–5, shares m 2–8, m ≥ k). The container records the quorum spec + per-officer commitments; unlocking later requires k shares. |
 | **Seal → .qsig** | Uploads the file, seals it server-side, and returns the container for **download** as `<name>.qsig`. Result block shows the key commitment and (if quorum) the officer count. A `seal` entry lands in the Merkle ledger with the file's SHA-256. |
+| **The `.qsig` on disk** | An **opaque v3 envelope**: a tiny `QSIG3` header (version, nonce, key commitment) followed by AES-256-GCM ciphertext — opening the file in an editor shows noise, not the document. Even the filename, size and hashes live *inside* the encryption; only a key-holder can read them. Legacy clear-JSON v1/v2 containers still verify for compatibility, but every new seal is an envelope. |
 
 ### 10.2 Column ⟨ 2 · VERIFY / UNLOCK ⟩
 
@@ -377,8 +395,10 @@ Merkle ledger in §10.3 — say that out loud during the demo.
 
 ## 11b. ⊕ Peer-to-Peer Transfer — real laptop → laptop (accounts)
 
-Distinct from §11: this panel moves an **actual encrypted container over
-the network** between user accounts/machines. Files ≤ 5 MB.
+Distinct from §11: this panel moves an **actual opaque encrypted
+container over the network** between user accounts/machines. Files up to
+**5 MB**; what arrives at the peer is a  envelope (pure noise
+without the key), not a readable document.
 
 | Element | What it does |
 |---|---|
@@ -388,7 +408,9 @@ the network** between user accounts/machines. Files ≤ 5 MB.
 | **…or remote laptop API base URL** | e.g. `http://192.168.1.42:8080` (the peer server must run with `HOST=0.0.0.0`) or the Render URL. **Send to laptop →** POSTs the container to the peer's `/api/doc/receive`, addressed to the same username there. |
 | **copy this machine's base URL** | Convenience button to share this server's address. |
 | **Verdict box** | `✓ delivered — container accepted into the inbox` (with peer inbox id) or the precise failure (unknown user, unreachable peer). |
-| **Inbox** | Documents received from peers: name, size, sender, time, verify-state chip. **verify** runs the full check against *your* session keys and records the verdict in the ledger; **dismiss** removes the item. |
+| **Inbox / Outbox tabs** | Your outgoing transfers land in the **outbox** (`sent by you`, with recipient + route), incoming ones in the **inbox** (`received from peers`) — the sender's and receiver's lists never mix. |
+| **Inbox row actions** | **verify** runs the full check against *your* session keys and records the verdict in the ledger (chip flips to `✓ verified` / `✗ failed`); **⬇ open** unlocks the container (key + QDS signature check) and downloads the **original file**; **wire proof** shows what actually crossed the network (below); **delete** removes the item from your inbox. |
+| **Wire proof** | Per-transfer transit evidence: both payload hashes, sizes, and byte-level equality between what Alice sealed and what Bob received — the "the document was protected while travelling" exhibit for the demo video. |
 
 Only the AES-GCM ciphertext travels — without the session key the peer
 sees nothing readable. "Both machines ran the same seeded QKD exchange"

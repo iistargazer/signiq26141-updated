@@ -53,7 +53,7 @@ export function LiveMonitor({ live, log, running, baseThreshold }: Props) {
                   {meta.label}
                 </span>
                 <span className={`chip ${s.qber > s.threshold ? 'chip-red' : 'chip-green'}`}>
-                  {s.qber > s.threshold ? '⚠ QBER above threshold' : 'channel stable'}
+                  {s.qber > s.threshold ? 'QBER above threshold' : 'channel stable'}
                 </span>
               </div>
               <div className="stat-grid">

@@ -39,6 +39,7 @@ use quantum::{privacy_amplification, ChannelSession, QuantumKeyGenerator, Sifted
 mod auth;
 mod doc_api;
 mod qds_api;
+mod qds_keys;
 mod qds_state;
 
 const DEFAULT_PORT: u16 = 8080;
@@ -544,7 +545,7 @@ async fn run_handler(
     // user's document-layer session key (sealing / P2P build on it).
     if let Some(secret) = response.results.iter().find_map(|r| r.derived_secret.clone()) {
         let username = user.0.clone().unwrap_or_else(|| "shared".into());
-        doc_api::capture_session_secret(&state, &username, &secret);
+        doc_api::capture_session_secret(&state, &username, &secret, "qkd-legacy");
     }
     let _ = state.events_tx.send(Arc::new(RunEvent::Done { run_id }));
     Ok(Json(response))
@@ -738,7 +739,15 @@ async fn main() {
     let auth_state = Arc::new(AuthState::load(users_path));
     eprintln!("accounts: {} registered user(s)", auth_state.user_count());
 
-    let doc_state = DocStateHolder::from_log(reloaded_log, audit_log_path, Arc::clone(&auth_state));
+    // The developer token enabling /api/audit/clear (ledger reset). When the
+    // env var is absent the endpoint is permanently disabled on this server.
+    let dev_token = std::env::var("DEVELOPER_TOKEN").ok().filter(|t| !t.trim().is_empty());
+    let doc_state = DocStateHolder::from_log(
+        reloaded_log,
+        audit_log_path,
+        Arc::clone(&auth_state),
+        dev_token,
+    );
     eprintln!(
         "audit ledger: {audit_entries} entr{} restored ({}); chain {}",
         if audit_entries == 1 { "y" } else { "ies" },

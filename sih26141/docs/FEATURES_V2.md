@@ -15,8 +15,9 @@ Vercel + the 3-account demo), `JUDGING_BOOK.md` (demo script),
 
 **Verified state of this build:** `cargo test --workspace` → **66
 passed, 0 failed**; frontend `tsc -b && vite build` clean; the scripted
-three-laptop E2E (`.freebuff/e2e-test.mjs`, 9 acts) and the multiparty
-E2E (`.freebuff/e2e-multiparty.mjs`, 7 acts) pass against the release
+three-laptop E2E (`scripts/e2e-test.mjs`, 9 acts), the multiparty
+E2E (`scripts/e2e-multiparty.mjs`, 7 acts) and the v3 E2E
+(`scripts/e2e-v3.mjs`, 40 checks) pass against the release
 binary.
 
 ---
@@ -219,7 +220,25 @@ single byte is detectable and key compromise is provable.
 
 ### The container (`sealing/src/lib.rs`)
 
-A `.qsig` file is `QSIG1\n` + JSON:
+**v3 opaque envelope — what a sealed file actually looks like on disk.** The
+whole container below is itself serialized to JSON and sealed under
+AES-256-GCM with the session key. The `.qsig` file on disk is:
+
+```
+QSIG3 3 <nonce> <key_commitment>\n<AES-256-GCM ciphertext — binary noise>
+```
+
+Open it in any editor: no file name, no hash, no readable metadata, no
+plaintext — the "locked document" is literal. The one-line header exposes
+only the format version, the GCM nonce and the key commitment (which proves
+*which* key family sealed it without revealing the key). `parse_container`
+returns the envelope as a placeholder with `sealed_envelope: true`; every
+consumer (verify, open, inbox meta, relay claim, wire-proof, quorum unlock)
+unseals with the workspace's candidate keys first — `unseal_envelope`
+fails closed with a precise commitment-mismatch reason on a wrong key.
+Legacy v1/v2 clear-JSON containers (below) still verify for compatibility.
+
+The JSON **inside** the envelope (`QSIG1\n` + JSON, as in v2):
 
 ```jsonc
 {
@@ -232,7 +251,7 @@ A `.qsig` file is `QSIG1\n` + JSON:
   "nonce":   812394...,                    // fresh per seal → GCM IV / legacy keystream
   "tag":     "<hex hmac>",                 // HMAC-SHA256 over (meta ‖ 0x00 ‖ file)
   "quorum":  { "threshold", "shares", "officer_commitments" },  // Feature 7
-  "ciphertext": "<base64>"                 // v2: AES-256-GCM(meta as AAD); b64 keeps a 5 MB
+  "ciphertext": "<base64>"                 // AES-256-GCM(meta as AAD); b64 keeps a 5 MB
                                            // file a ~6.7 MB container, not ~20 MB of digits
 }
 ```
@@ -243,7 +262,7 @@ Security properties, each mapped to a mechanism:
 |---|---|
 | Tamper-evidence (1 byte) | AES-256-GCM authenticated decryption (v2) + HMAC-SHA256 over `(serialized meta ‖ 0x00 ‖ file_bytes)` — metadata is bound *both* as GCM associated data and inside the tag, so swapping documents with intact bodies fails before the HMAC is even reached |
 | Key-compromise evidence | `key_commitment = SHA-256(canonical key)` — verify with the wrong session key → `key_match: false` → *"document sealed under a different session key (key possibly compromised)"* |
-| Confidentiality | **AES-256-GCM** under the canonical session key (v2); the legacy XOR keystream remains only for verifying v1 containers |
+| Confidentiality | **AES-256-GCM** under the canonical session key (v2 payload, v3 envelope); the legacy XOR keystream remains only for verifying v1 containers |
 | Size honesty | ciphertext serialized as base64: a 5 MB file seals to a ~6.7 MB container (unit-tested to stay under 1.5×) |
 | Forensic anchoring | `audit_ref` pins the ledger's `first_seq / last_seq / root` at seal time — the ledger root *proves what the log looked like when the document was sealed* |
 | Replay-fresh sealing | fresh 64-bit nonce per seal → identical file sealed twice yields different containers |
@@ -256,8 +275,10 @@ anywhere fails instantly.
 
 **Honest scope note** (say it before a judge does): the legacy v1
 payload used a demo-grade XOR keystream; since the v3 build every new
-seal is **AES-256-GCM** — real authenticated encryption. The docs keep
-the v1 path only for verifying old containers.
+seal is **AES-256-GCM** — real authenticated encryption. The current
+build additionally seals the container itself (the **opaque envelope**
+above), so the metadata is hidden too. The docs keep the v1 path only
+for verifying old containers.
 
 ### Where it surfaces
 
@@ -537,26 +558,35 @@ the channel. The v3 build adds:
 
 ### The key-sharing convention (be honest about it)
 
-Two laptops end up with the same session key because **both ran the QKD
-simulation with the same seed** (the seeded simulation is deterministic).
-The dashboards show this: seed 424242 on both machines → both distill the
-identical 256-bit key → each can verify the other's seals. A production
-system would transport a one-time pad over the quantum channel itself;
-the convention here keeps the demo two-laptop-friendly.
+Two laptops end up with the same session key because **both derived it
+with the same six-state QDS seed** (the seeded generation is
+deterministic). The dashboards show this: seed 424242 on both machines →
+both distill the identical 256-bit key → each can verify the other's
+seals. A production system would transport a one-time pad over the
+quantum channel itself; the convention here keeps the demo
+two-laptop-friendly. Cross-server QDS signature verification additionally
+requires every server to share `TRENT_SEED` (same notary tables).
 
 ### Where it surfaces
 
 - **API** — `/api/auth/*`, `GET /api/doc/session` (has_key, commitment,
   quorum state), `POST /api/doc/send` / `receive`, `GET /api/doc/inbox`,
-  `POST /api/doc/inbox/verify`, `DELETE /api/doc/inbox/{id}`.
+  `GET /api/doc/outbox` (sent items, kept separate from received),
+  `POST /api/doc/inbox/verify`, `DELETE /api/doc/inbox/{id}`,
+  `POST /api/doc/open` (unlock & download the original file),
+  `GET /api/doc/wire-proof` (what crossed the network: ciphertext sample,
+  entropy, hashes), `POST /api/doc/relay/deposit` + `claim` +
+  `GET /api/doc/relay/inbox` (cross-LAN transfer via claim codes).
 - **Dashboard** — **AuthBar** in the header (register / login / logout,
   `👤 alice` chip when logged in); the **Peer-to-Peer Transfer** panel's
   two send modes (user vs laptop); the **Inbox** list with verify /
   dismiss per row.
 - **Tests** — `server/src/auth.rs` (PBKDF2 known vector, register /
   login / reload round-trip, duplicate + short-password rejection);
-  scripted E2E `.freebuff/e2e-test.mjs` acts 1–3 & 7 (three accounts,
-  cross-laptop delivery, user-addressed delivery).
+  scripted E2E `scripts/e2e-v3.mjs` (three accounts, cross-laptop QDS
+  handshake, delivery, unlock/download, outbox separation, wire proof,
+  relay claim-code round-trip, attack theater rejection) and
+  `scripts/e2e-test.mjs` acts 1–3 & 7.
 
 **Demo line:** *"Two laptops, two accounts, one website. Alice seals on
 her machine, sends to bob's account over the network — only ciphertext
@@ -592,6 +622,17 @@ so "forward" goes through the recipient's inbox (`to_user`) — the
 rejection then happens under the *victim's* key on the victim's screen,
 exactly like the real-world attack path.
 
+### Real-time Attack Theater (`POST /api/doc/attack-theater`)
+
+For the demo video, the theater stages the whole kill chain in one call
+and returns a narrated step log rendered live in the UI: **capture**
+(what Mallory holds) → **inspect the wire** (ciphertext sample + entropy
++ hashes, proving she sees only ciphertext) → **tamper** (the mangled
+bytes) → **forward** (delivered into the victim's inbox as a real item)
+→ **victim's rejection** (the exact failed check, computed under the
+victim's key; the inbox item is pre-flagged `verified: false` with the
+reason). Each theater run is a ledger event.
+
 ### Where it surfaces
 
 - **API** — `POST /api/doc/attack` (returns the mangled `container_b64`
@@ -622,7 +663,7 @@ from their own login. The sealant unlocks with
 pledged shares against the officer commitments and reconstructs.
 Below k pledges the unlock is rejected; a successful unlock consumes the
 pledges. Distribute / each pledge / unlock / rejections all land in the
-ledger (E2E: `.freebuff/e2e-multiparty.mjs`).
+ledger (E2E: `scripts/e2e-multiparty.mjs`).
 
 ---
 

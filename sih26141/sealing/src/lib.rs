@@ -53,6 +53,12 @@ pub const MAGIC: &str = "QSIG1";
 /// Current container format version (AES-256-GCM payload).
 pub const FORMAT_VERSION: u32 = 2;
 
+/// Envelope format version (v3): the container JSON itself is sealed inside
+/// AES-256-GCM, so a `.qsig` file on disk shows only the header + ciphertext
+/// — no filename, no size, no hashes. Only the key commitment (a SHA-256
+/// digest — leaks nothing) and the envelope nonce stay outside.
+pub const ENVELOPE_VERSION: u32 = 3;
+
 fn hmac_tag(key: &[u8], data: &[u8]) -> Vec<u8> {
     let mut mac = <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(data);
@@ -160,6 +166,11 @@ pub struct QuorumSpec {
 pub struct QsigDocument {
     pub magic: String,
     pub meta: DocumentMeta,
+    /// The canonical sealing key (v3 envelope only). Never serialized —
+    /// lives only in memory so the envelope codec can seal/unseal the
+    /// container JSON without every call site re-deriving the key.
+    #[serde(skip)]
+    pub key: Vec<u8>,
     pub audit_ref: AuditRef,
     /// HMAC scheme identifier (informational).
     pub scheme: String,
@@ -179,6 +190,27 @@ pub struct QsigDocument {
     /// Parsing still accepts the legacy array form for old containers.
     #[serde(with = "b64_bytes")]
     pub ciphertext: Vec<u8>,
+    /// Attached quantum digital signature (v2.1): a teleportation-based QDS
+    /// signature over the document's SHA-256, produced by the shared Trent
+    /// notary at seal time. Optional so v1/v2.0 containers still parse.
+    /// Unlock requires this signature to verify — the document is locked
+    /// behind BOTH the symmetric seal key AND the quantum signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qds_sig: Option<QdsSigAttachment>,
+}
+
+/// A teleportation-QDS signature attached to a sealed container.
+/// `correction_bits` is the flattened Bell-outcome sequence (0/1 bytes,
+/// base64-encoded — the same wire codec as the payload ciphertext).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QdsSigAttachment {
+    #[serde(with = "b64_bytes")]
+    pub correction_bits: Vec<u8>,
+    pub nonce: u64,
+    /// Trent public-key commitment in force when signed.
+    pub key_commitment: String,
+    /// Scheme label ("teleport-qds-v1").
+    pub scheme: String,
 }
 
 /// serde codec: ciphertext as standard base64 (accepts legacy number arrays).
@@ -356,28 +388,197 @@ pub fn seal_document(
         tag,
         quorum,
         ciphertext,
+        qds_sig: None,
+        key,
     })
 }
 
-/// Serialize a container to `.qsig` bytes (magic line + JSON, base64 payload).
+/// Serialize a container to `.qsig` bytes.
+///
+/// v3 (envelope): header line + AES-256-GCM seal over the container JSON —
+/// opaque to anyone without the key (the "locked document" look: opening
+/// the file in an editor shows noise, not metadata). Header keeps only
+/// `QSIG3 <v> <nonce> <key_commitment>`.
+/// v2 and below (legacy, when `envelope=false`): magic line + JSON, base64
+/// payload — kept for backward compatibility with old containers.
 pub fn container_bytes(doc: &QsigDocument) -> Vec<u8> {
-    let mut out = Vec::with_capacity(512 + doc.ciphertext.len() * 4 / 3);
-    out.extend_from_slice(MAGIC.as_bytes());
+    container_bytes_opt(doc, true)
+}
+
+/// As `container_bytes`, with explicit envelope choice.
+pub fn container_bytes_opt(doc: &QsigDocument, envelope: bool) -> Vec<u8> {
+    let json = serde_json::to_vec(doc).unwrap_or_default();
+    if !envelope || doc.key.len() != 32 {
+        // Legacy clear-JSON container (v2 and older on-disk format).
+        let mut out = Vec::with_capacity(512 + json.len() * 4 / 3);
+        out.extend_from_slice(MAGIC.as_bytes());
+        out.push(b'\n');
+        out.extend_from_slice(json.as_slice());
+        return out;
+    }
+    let mut out = Vec::with_capacity(96 + json.len() + 16);
+    out.extend_from_slice(
+        format!(
+            "QSIG3 {} {} {}",
+            ENVELOPE_VERSION, doc.nonce, doc.key_commitment
+        )
+        .as_bytes(),
+    );
     out.push(b'\n');
-    out.extend_from_slice(serde_json::to_vec(doc).unwrap_or_default().as_slice());
+    let cipher = Aes256Gcm::new_from_slice(&doc.key).expect("32-byte key");
+    let sealed = cipher
+        .encrypt(Nonce::from_slice(&gcm_nonce(doc.nonce)), Payload { msg: &json, aad: MAGIC.as_bytes() })
+        .expect("envelope encryption cannot fail for a valid key");
+    out.extend_from_slice(&sealed);
     out
 }
 
 /// Parse `.qsig` bytes back into a container.
+///
+/// Accepts both on-disk formats:
+/// * `QSIG3 <v> <nonce> <commitment>\n<ciphertext>` — the v3 envelope. The
+///   container JSON cannot be decoded here (it is sealed); the returned
+///   document carries the header fields and an **empty meta/metadata** that
+///   is filled in by [`unseal_envelope`] once the key is supplied.
+/// * `QSIG1\n<json>` — the legacy v1/v2 clear-JSON container.
+#[derive(Debug, Clone)]
+pub struct ParsedContainer {
+    pub doc: QsigDocument,
+    /// True when the bytes were a v3 sealed envelope (meta pending unseal).
+    pub sealed_envelope: bool,
+}
+
 pub fn parse_container(bytes: &[u8]) -> Result<QsigDocument, String> {
-    let text = std::str::from_utf8(bytes).map_err(|_| "container is not UTF-8".to_string())?;
-    let mut lines = text.splitn(2, '\n');
-    let magic = lines.next().unwrap_or("").trim();
-    if magic != MAGIC {
-        return Err(format!("unknown container format: expected magic {MAGIC}, got '{magic}'"));
+    parse_container_full(bytes).map(|p| p.doc)
+}
+
+/// Parse preserving the envelope distinction (see [`parse_container`]).
+pub fn parse_container_full(bytes: &[u8]) -> Result<ParsedContainer, String> {
+    // The v3 envelope body is binary ciphertext — split the header off as
+    // bytes first and only require UTF-8 for the (text) header line.
+    let header_end = bytes
+        .iter()
+        .position(|&b| b == b'\n')
+        .ok_or_else(|| "container has no header line".to_string())?;
+    let header = std::str::from_utf8(&bytes[..header_end])
+        .map_err(|_| "container header is not UTF-8".to_string())?
+        .trim();
+    let body = &bytes[header_end + 1..];
+    let magic = header;
+
+    // ---- v3 sealed envelope ----
+    if magic.starts_with("QSIG3 ") {
+        let mut parts = magic.split_ascii_whitespace();
+        parts.next(); // "QSIG3"
+        let ver: u32 = parts
+            .next()
+            .ok_or_else(|| "envelope header missing version".to_string())?
+            .parse()
+            .map_err(|_| "envelope version is not a number".to_string())?;
+        let nonce: u64 = parts
+            .next()
+            .ok_or_else(|| "envelope header missing nonce".to_string())?
+            .parse()
+            .map_err(|_| "envelope nonce is not a number".to_string())?;
+        let commitment = parts
+            .next()
+            .ok_or_else(|| "envelope header missing key commitment".to_string())?
+            .to_string();
+        if body.is_empty() {
+            return Err("envelope body is empty".to_string());
+        }
+        return Ok(ParsedContainer {
+            doc: QsigDocument {
+                magic: MAGIC.into(),
+                meta: DocumentMeta {
+                    name: String::new(),
+                    size: body.len(),
+                    mime: "application/octet-stream".into(),
+                    sha256: String::new(),
+                    sealed_at: String::new(),
+                },
+                audit_ref: AuditRef::default(),
+                scheme: "aes-256-gcm+sha256-hmac/qkd".into(),
+                v: FORMAT_VERSION,
+                key_commitment: commitment,
+                nonce,
+                tag: String::new(),
+                quorum: QuorumSpec::default(),
+                ciphertext: body.to_vec(),
+                qds_sig: None,
+                key: Vec::new(),
+            },
+            sealed_envelope: ver == ENVELOPE_VERSION,
+        });
     }
-    let json = lines.next().unwrap_or("");
-    serde_json::from_str(json).map_err(|e| format!("container JSON invalid: {e}"))
+
+    // ---- legacy clear-JSON container ----
+    if magic != MAGIC {
+        return Err(format!("unknown container format: expected magic {MAGIC} or QSIG3, got '{magic}'"));
+    }
+    let json = std::str::from_utf8(body).map_err(|_| "container JSON is not UTF-8".to_string())?;
+    let doc: QsigDocument =
+        serde_json::from_str(json).map_err(|e| format!("container JSON invalid: {e}"))?;
+    Ok(ParsedContainer { doc, sealed_envelope: false })
+}
+
+/// Unseal a v3 envelope with `secret_hex`: decrypts the container JSON and
+/// replaces the placeholder document with the real one. Also verifies the
+/// key commitment so a wrong key fails here with a precise reason.
+pub fn unseal_envelope(envelope: &QsigDocument, secret_hex: &str) -> Result<QsigDocument, String> {
+    let secret = hex::decode(secret_hex).map_err(|_| "seal key is not valid hex".to_string())?;
+    let key = canonicalize_key(&secret);
+    let got = key_commitment_for(&key);
+    if got != envelope.key_commitment {
+        return Err(format!(
+            "key commitment mismatch: container sealed under a different key (got {got}…, want {}…) supposed",
+            &envelope.key_commitment[..16.min(envelope.key_commitment.len())]
+        ));
+    }
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
+    let json = cipher
+        .decrypt(
+            Nonce::from_slice(&gcm_nonce(envelope.nonce)),
+            Payload { msg: envelope.ciphertext.as_slice(), aad: MAGIC.as_bytes() },
+        )
+        .map_err(|_| "envelope decryption failed — wrong key or corrupted container".to_string())?;
+    let mut doc: QsigDocument =
+        serde_json::from_slice(&json).map_err(|e| format!("container JSON invalid after unseal: {e}"))?;
+    doc.key = key;
+    Ok(doc)
+}
+
+/// Open (unlock) a sealed container: full verification first, then return
+/// the original file bytes. This is the "password-protected document" step —
+/// the file is only recoverable under the correct quantum-derived key, and
+/// (when a QDS signature is attached) only when Trent's signature over the
+/// document hash verifies. Callers layer the QDS check on top (the sealing
+/// crate is intentionally QDS-agnostic).
+pub fn open_document(
+    doc: &QsigDocument,
+    secret_hex: &str,
+) -> Result<(Vec<u8>, VerificationOutcome), String> {
+    let outcome = verify_document(doc, secret_hex)?;
+    if !outcome.passed() {
+        return Err(outcome.note);
+    }
+    // Recover the plaintext: v2 GCM decrypt, v1 XOR unmask.
+    let secret = hex::decode(secret_hex).map_err(|_| "verification key is not valid hex".to_string())?;
+    let plaintext = if doc.v >= FORMAT_VERSION {
+        let key = canonicalize_key(&secret);
+        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
+        let aad = serde_json::to_vec(&doc.meta).map_err(|e| e.to_string())?;
+        cipher
+            .decrypt(
+                Nonce::from_slice(&gcm_nonce(doc.nonce)),
+                Payload { msg: doc.ciphertext.as_slice(), aad: aad.as_slice() },
+            )
+            .map_err(|_| "payload decryption failed after verification (state changed?)".to_string())?
+    } else {
+        let mask = keystream(&secret, doc.nonce, doc.ciphertext.len());
+        doc.ciphertext.iter().zip(mask.iter()).map(|(b, m)| b ^ m).collect()
+    };
+    Ok((plaintext, outcome))
 }
 
 /// Verify a container against `secret_hex`. A single flipped byte anywhere in
@@ -635,7 +836,14 @@ mod tests {
         assert!(out.payload_scheme.contains("v2"));
 
         let bytes = container_bytes(&doc);
-        let parsed = parse_container(&bytes).unwrap();
+        // v3 envelope: on-disk bytes are opaque — nothing but header+noise.
+        assert!(bytes.starts_with(b"QSIG3 "), "new seals must use the sealed envelope format");
+        let header_end = bytes.iter().position(|&b| b == b'\n').unwrap();
+        let header = std::str::from_utf8(&bytes[..header_end]).unwrap();
+        assert!(!header.contains("report.pdf"), "envelope header must hide the filename");
+        let envelope = parse_container(&bytes).unwrap();
+        assert!(envelope.meta.name.is_empty(), "sealed meta stays hidden until unseal");
+        let parsed = unseal_envelope(&envelope, SECRET).unwrap();
         assert_eq!(parsed, doc);
     }
 
@@ -680,6 +888,50 @@ mod tests {
     }
 
     #[test]
+    fn open_document_round_trips_the_original_file() {
+        let original = b"CONFIDENTIAL: the real file bytes, recoverable only under the key";
+        let doc = seal_document(
+            "minutes.txt",
+            "text/plain",
+            original,
+            SECRET,
+            "2026-09-17T00:00:00Z",
+            AuditRef::default(),
+            QuorumSpec::default(),
+            &mut StdRng::seed_from_u64(5),
+        )
+        .unwrap();
+        let (plaintext, outcome) = open_document(&doc, SECRET).unwrap();
+        assert_eq!(plaintext, original);
+        assert!(outcome.passed());
+        // A wrong key cannot open the document at all.
+        let wrong = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
+        assert!(open_document(&doc, wrong).is_err());
+        // A tampered container cannot be opened either.
+        let mut tampered = doc.clone();
+        tampered.ciphertext[0] ^= 1;
+        assert!(open_document(&tampered, SECRET).is_err());
+    }
+
+    #[test]
+    fn qds_sig_attachment_round_trips() {
+        let mut doc = seal();
+        assert!(doc.qds_sig.is_none());
+        doc.qds_sig = Some(QdsSigAttachment {
+            correction_bits: vec![0, 1, 1, 0],
+            nonce: 7,
+            key_commitment: "abc".into(),
+            scheme: "teleport-qds-v1".into(),
+        });
+        let parsed = unseal_envelope(&parse_container(&container_bytes(&doc)).unwrap(), SECRET).unwrap();
+        assert_eq!(parsed.qds_sig, doc.qds_sig);
+        // Legacy containers (no field) still parse.
+        let legacy_bytes = container_bytes_opt(&seal(), false);
+        let legacy = parse_container(&legacy_bytes).unwrap();
+        assert!(legacy.qds_sig.is_none());
+    }
+
+    #[test]
     fn legacy_v1_container_still_verifies() {
         // Hand-build a v1 container the old code would have produced.
         let secret = hex::decode(SECRET).unwrap();
@@ -709,6 +961,8 @@ mod tests {
             tag: hex::encode(hmac_tag(&secret, &bound)),
             quorum: QuorumSpec::default(),
             ciphertext,
+            qds_sig: None,
+            key: secret.clone(),
         };
         let out = verify_document(&doc, SECRET).unwrap();
         assert!(out.passed(), "{}", out.note);
@@ -796,12 +1050,12 @@ mod tests {
         .unwrap();
         let bytes = container_bytes(&doc);
         assert!(
-            bytes.len() < big.len() * 3 / 2,
-            "container is {} bytes for {} payload — base64 framing must stay under 1.5×",
+            bytes.len() < big.len() * 3 / 2 + 96,
+            "container is {} bytes for {} payload — base64 framing + header must stay under ~1.5×",
             bytes.len(),
             big.len()
         );
-        let parsed = parse_container(&bytes).unwrap();
+        let parsed = unseal_envelope(&parse_container(&bytes).unwrap(), SECRET).unwrap();
         assert!(verify_document(&parsed, SECRET).unwrap().passed());
     }
 

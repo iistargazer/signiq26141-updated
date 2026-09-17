@@ -1,0 +1,6 @@
+{
+  "installCommand": "npm install --prefix sih26141/frontend",
+  "buildCommand": "npm run build --prefix sih26141/frontend",
+  "outputDirectory": "sih26141/frontend/dist",
+  "rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }]
+}

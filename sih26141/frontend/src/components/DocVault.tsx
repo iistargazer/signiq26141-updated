@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  auditApi,
   authApi,
   b64ToBytes,
   bytesToB64,
   docApi,
   getAuthUsername,
-  type AuditEntry,
-  type InclusionProof,
+  type OpenResponse,
+  type QdsKeyResponse,
   type SessionInfo,
   type SealResponse,
   type VerificationOutcome,
@@ -15,15 +14,33 @@ import {
   type DistributeResponse,
 } from '../api'
 
-/** Download helper for the .qsig container (base64 wire format). */
-function downloadContainer(name: string, containerB64: string) {
-  const blob = new Blob([b64ToBytes(containerB64)], { type: 'application/octet-stream' })
+/** Minimal document glyph for the dropzone (stroke inherits currentColor). */
+function DocIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden>
+      <path
+        d="M7 3h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"
+        stroke="currentColor"
+        strokeWidth="1.4"
+      />
+      <path d="M14 3v4h4M9.5 12h5M9.5 15.5h5" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  )
+}
+
+/** Download helper for raw bytes (the opened document or a .qsig container). */
+function downloadBytes(name: string, b64: string, mime = 'application/octet-stream') {
+  const blob = new Blob([b64ToBytes(b64)], { type: mime })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = name.endsWith('.qsig') ? name : `${name}.qsig`
+  a.download = name
   a.click()
   URL.revokeObjectURL(url)
+}
+
+function downloadContainer(name: string, containerB64: string) {
+  downloadBytes(name.endsWith('.qsig') ? name : `${name}.qsig`, containerB64)
 }
 
 interface QuorumRow {
@@ -40,6 +57,8 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
   const [sealResp, setSealResp] = useState<SealResponse | null>(null)
   const [verify, setVerify] = useState<VerificationOutcome | null>(null)
   const [unlockResp, setUnlockResp] = useState<QuorumUnlockResponse | null>(null)
+  const [qdsKey, setQdsKey] = useState<QdsKeyResponse | null>(null)
+  const [opened, setOpened] = useState<OpenResponse | null>(null)
   const [quorumRows, setQuorumRows] = useState<QuorumRow[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -50,12 +69,11 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
   const [heldShare, setHeldShare] = useState<{ x: number; from: string } | null>(null)
   const [pledgesReceived, setPledgesReceived] = useState(0)
 
-  // Audit log state
-  const [entries, setEntries] = useState<AuditEntry[]>([])
-  const [root, setRoot] = useState<string | null>(null)
-  const [chainOk, setChainOk] = useState<boolean | null>(null)
-  const [proof, setProof] = useState<InclusionProof | null>(null)
   const refreshAudit = useRef<() => void>(() => {})
+
+  const refreshAuditNow = useCallback(() => {
+    refreshAudit.current()
+  }, [])
 
   const refreshSession = useCallback(() => {
     docApi.session().then(setSession).catch(() => setSession(null))
@@ -73,22 +91,9 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
     }
   }, [])
 
-  const refreshAuditNow = useCallback(() => {
-    auditApi.events(200).then((r) => {
-      setEntries(r.entries)
-      setRoot(r.root ?? null)
-    }).catch(() => {})
-    auditApi.verifyChain().then((v) => setChainOk(v.ok)).catch(() => {})
-  }, [])
-
   useEffect(() => {
     refreshSession()
-    refreshAuditNow()
-    refreshAudit.current = refreshAuditNow
-    // Keep the audit log fresh when transfers happen elsewhere in the app.
-    const t = setInterval(refreshAuditNow, 8000)
-    return () => clearInterval(t)
-  }, [refreshSession, refreshAuditNow])
+  }, [refreshSession])
 
   const onFile = (f: File | null) => {
     setError(null)
@@ -131,6 +136,7 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
       setSealResp(resp)
       setVerify(null)
       setUnlockResp(null)
+      setOpened(null)
       setDistributeResp(null)
       if (resp.quorum) {
         // Pre-fill the officer list with other registered accounts.
@@ -145,12 +151,40 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
       downloadContainer(resp.name, resp.container_b64)
       onLog(
         `sealed '${file.name}' → ${resp.name}.qsig (${(resp.size / 1024).toFixed(1)} KB) · SHA-256 ${resp.sha256.slice(0, 12)}…` +
-          (resp.quorum ? ` · quorum ${resp.quorum[0]}-of-${resp.quorum[1]}` : ''),
+          (resp.quorum ? ` · quorum ${resp.quorum[0]}-of-${resp.quorum[1]}` : '') +
+          ` · key: ${resp.key_source}` +
+          (resp.qds_signature ? ' · teleport-QDS signature attached' : ''),
       )
-      if (resp.audit_warning) onLog(`⚠ ledger: ${resp.audit_warning}`)
+      if (resp.audit_warning) onLog(`ledger: ${resp.audit_warning}`)
       refreshAuditNow()
       refreshSession()
     })
+
+  // Six-state QDS key generation: the document layer's own key path.
+  const doQdsKey = () =>
+    guard('qds-key', async () => {
+      const resp = await docApi.qdsKey()
+      setQdsKey(resp)
+      onLog(`QDS key generated: ${resp.provenance}`)
+      refreshAuditNow()
+      refreshSession()
+    })
+
+  // Unlock: recover the ORIGINAL document (two-factor: seal key + QDS sig).
+  const doOpen = () =>
+    guard('open', async () => {
+      if (!sealResp) return
+      const resp = await docApi.open({ container_b64: sealResp.container_b64 })
+      setOpened(resp)
+      onLog(`unlocked '${resp.name}' — ${resp.unlocked_via}`)
+      refreshAuditNow()
+    })
+
+  const saveOpened = () => {
+    if (!opened) return
+    downloadBytes(opened.name, opened.content_b64, opened.mime || 'application/octet-stream')
+    onLog(`saved '${opened.name}' (${(opened.size / 1024).toFixed(1)} KB) — original bytes recovered`)
+  }
 
   const doVerify = () =>
     guard('verify', async () => {
@@ -178,12 +212,6 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
         `quorum unlock ${resp.recognized_officers.length}/${resp.shares_presented} shares recognized — ${resp.outcome?.note ?? 'rejected'}`,
       )
       refreshAuditNow()
-    })
-
-  const showProof = (seq: number) =>
-    guard('proof', async () => {
-      const p = await auditApi.proof(seq)
-      setProof(p)
     })
 
   // ---- cross-account multiparty threshold -------------------------------
@@ -235,24 +263,35 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
   return (
     <section className="panel">
       <div className="panel-title-row">
-        <div className="panel-title">⚛ Quantum Document Vault</div>
+        <div className="panel-title">Quantum Document Vault</div>
         <div className="vault-session">
           {session?.has_key ? (
             <span className="chip chip-green">
               session key {session.key_preview}… · {session.remembered_keys} remembered
             </span>
           ) : (
-            <span className="chip chip-gray">no session key — run a QKD exchange first</span>
+            <span className="chip chip-gray">no session key yet</span>
           )}
           {session?.quorum && (
             <span className="chip chip-blue">
               quorum {session.quorum[0]}-of-{session.quorum[1]}
             </span>
           )}
+          <button className="btn btn-sm btn-primary" onClick={doQdsKey} disabled={busy === 'qds-key'}>
+            {busy === 'qds-key' ? 'Deriving…' : 'Generate QDS key'}
+          </button>
         </div>
       </div>
 
-      {error && <div className="error-banner">⚠ {error}</div>}
+      {qdsKey && (
+        <div className="dim" style={{ marginBottom: 8 }}>
+          🔐 Sealing key derived from <b>six-state QDS session #{qdsKey.session_id}</b> —{' '}
+          {qdsKey.conclusive_bits} conclusive bits / {qdsKey.n_pulses} qubits per message · mismatch{' '}
+          {(qdsKey.mismatch_rate * 100).toFixed(1)}% · commitment {qdsKey.key_commitment.slice(0, 16)}…
+        </div>
+      )}
+
+      {error && <div className="error-banner">{error}</div>}
 
       <div className="vault-grid">
         {/* ---- seal ---- */}
@@ -267,7 +306,7 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
               </>
             ) : (
               <>
-                <span className="dropzone-icon">🗎</span>
+                <span className="dropzone-icon"><DocIcon /></span>
                 <span>Drop a PDF / image / text file here</span>
               </>
             )}
@@ -390,9 +429,36 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
               <button className="btn" onClick={doVerify} disabled={busy === 'verify'}>
                 {busy === 'verify' ? 'Verifying…' : 'Verify against session key'}
               </button>
+              <button className="btn btn-primary" onClick={doOpen} disabled={busy === 'open'}>
+                {busy === 'open' ? 'Unlocking…' : '🔓 Unlock & download original'}
+              </button>
               {verify && (
                 <div className={`verdict ${verify.authentic && verify.integrity ? 'verdict-ok' : 'verdict-bad'}`}>
                   {verify.format_ok && verify.authentic && verify.integrity ? '✓' : '✗'} {verify.note}
+                </div>
+              )}
+              {opened && (
+                <div className="vault-result">
+                  <div className={`verdict verdict-ok`}>
+                    ✓ document unlocked — {opened.unlocked_via}
+                  </div>
+                  {opened.qds_check && (
+                    <div className="vault-result-row">
+                      <span className="k">teleport-QDS</span>
+                      <code>
+                        {opened.qds_check.verdict.toUpperCase()} · {(opened.qds_check.match_ratio * 100).toFixed(0)}% match
+                      </code>
+                    </div>
+                  )}
+                  <div className="vault-result-row">
+                    <span className="k">original file</span>
+                    <code>
+                      {opened.name} ({(opened.size / 1024).toFixed(1)} KB)
+                    </code>
+                  </div>
+                  <button className="btn btn-sm btn-primary" onClick={saveOpened}>
+                    ⬇ save '{opened.name}'
+                  </button>
                 </div>
               )}
 
@@ -434,7 +500,7 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
       {heldShare && (
         <div className="quorum-panel" style={{ marginTop: 12 }}>
           <div className="quorum-title">
-            🔑 You hold officer OFF-{String(heldShare.x).padStart(2, '0')} (distributed by{' '}
+            You hold officer OFF-{String(heldShare.x).padStart(2, '0')} (distributed by{' '}
             {heldShare.from})
           </div>
           <div className="dim" style={{ marginBottom: 6 }}>
@@ -447,60 +513,15 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
         </div>
       )}
 
-      {/* ---- audit ledger ---- */}
       <div className="ledger">
         <div className="ledger-head">
-          <div className="vault-col-title">3 · Merkle Audit Ledger</div>
+          <div className="vault-col-title">Merkle Audit Ledger</div>
           <div className="ledger-badges">
-            <span className={`chip ${chainOk === null ? 'chip-gray' : chainOk ? 'chip-green' : 'chip-red'}`}>
-              {chainOk === null ? 'chain …' : chainOk ? '✓ chain intact' : '✗ chain broken'}
+            <span className="chip chip-gray">
+              live — full ledger + proofs in the <a className="link-btn" href="#ledger" onClick={(e) => { e.preventDefault(); document.getElementById('ledger')?.scrollIntoView({ behavior: 'smooth' }) }}>Ledger</a> section
             </span>
-            <span className="chip chip-blue" title={root ?? undefined}>
-              root {root ? `${root.slice(0, 12)}…` : '—'}
-            </span>
-            <span className="chip chip-gray">{entries.length} entries</span>
           </div>
         </div>
-        {entries.length === 0 ? (
-          <div className="vault-placeholder">No audit events yet — seal, verify, or transfer a document.</div>
-        ) : (
-          <div className="ledger-table">
-            <div className="ledger-row ledger-row-head">
-              <span>#</span>
-              <span>kind</span>
-              <span>detail</span>
-              <span>leaf</span>
-              <span></span>
-            </div>
-            {entries.slice(0, 25).map((e) => (
-              <div key={e.seq} className={`ledger-row ${e.accepted ? '' : 'ledger-row-bad'}`}>
-                <span className="mono">{e.seq}</span>
-                <span>
-                  <span className={`chip ${e.accepted ? 'chip-green' : 'chip-red'} chip-sm`}>{e.kind}</span>
-                </span>
-                <span className="ledger-detail">{e.detail}</span>
-                <span className="mono dim">{e.leaf_hash.slice(0, 10)}…</span>
-                <button className="link-btn" onClick={() => showProof(e.seq)}>
-                  proof
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {proof && (
-          <div className="proof-box">
-            <div>
-              <b>inclusion proof seq #{proof.seq}</b> — {proof.siblings.length} sibling hashes
-            </div>
-            <code>{proof.leaf_hash.slice(0, 32)}… → root {proof.root.slice(0, 32)}…</code>
-            <div className="dim">
-              Replaying the sibling chain recomputes exactly this root: the event provably sits in the ledger.
-            </div>
-            <button className="link-btn" onClick={() => setProof(null)}>
-              dismiss
-            </button>
-          </div>
-        )}
       </div>
     </section>
   )

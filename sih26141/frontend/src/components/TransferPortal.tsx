@@ -10,12 +10,12 @@ interface LogLine {
 }
 
 const STAGE_ICON: Record<string, string> = {
-  qkd: '🔑',
-  sift: '🔍',
-  amplify: '⚡',
-  hmac: '🔏',
-  transmit: '📡',
-  verify: '🧪',
+  qkd: 'key',
+  sift: 'sift',
+  amplify: 'amp',
+  hmac: 'mac',
+  transmit: 'wire',
+  verify: 'test',
 }
 
 const LEVEL_COLOR: Record<string, string> = {
@@ -118,11 +118,11 @@ export function TransferPortal({ onLog }: { onLog: (line: string) => void }) {
   return (
     <section className="panel">
       <div className="panel-title-row">
-        <div className="panel-title">🛰 P2P Transfer Portal — Alice → Relays → Bob</div>
+        <div className="panel-title">P2P Transfer Portal — Alice → Relays → Bob</div>
         {busy && <span className="pulse-dot" aria-label="transferring" />}
       </div>
 
-      {error && <div className="error-banner">⚠ {error}</div>}
+      {error && <div className="error-banner">{error}</div>}
 
       <div className="transfer-controls">
         <label className="dropzone dropzone-sm">
@@ -134,7 +134,7 @@ export function TransferPortal({ onLog }: { onLog: (line: string) => void }) {
             </>
           ) : (
             <>
-              <span className="dropzone-icon">📡</span>
+              <span className="dropzone-icon">→</span>
               <span>file to transmit</span>
             </>
           )}

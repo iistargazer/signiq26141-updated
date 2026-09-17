@@ -14,7 +14,7 @@ function ClassChip({ result }: { result: ScenarioResult }) {
   if (cls === 'secure')
     return <span className="chip chip-green">✓ secure</span>
   if (cls === 'degraded')
-    return <span className="chip chip-amber">⚠ degradation warning</span>
+    return <span className="chip chip-amber">degradation warning</span>
   return <span className="chip chip-red">✗ under attack</span>
 }
 

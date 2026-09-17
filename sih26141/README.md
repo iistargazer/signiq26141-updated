@@ -32,7 +32,7 @@ dashboard. No AI/ML anywhere — detection is pure measurement statistics.
 |---|---|---|
 | 1 | **Multi-hop relay nodes (quantum repeaters)** — route qubits through trusted relays, per-link sifting/noise/intercept stats | `quantum/src/relay.rs`, relay-hop slider + route view in the dashboard |
 | 2 | **Noise & channel degradation filter** — environmental bit-flips (fiber/turbulence) independent of attacks; the detector gives a 3-way verdict: secure / **Channel Degradation Warning** / attack | `quantum` (noise model), `detection` (3-way classifier), fiber-noise slider |
-| 3 | **Document sealing (`.qsig`)** — SHA-256 file hash + HMAC bound to the QKD session key + **AES-256-GCM** encrypted payload (metadata bound as AAD) in a versioned container, up to **5 MB** | `sealing` crate, `POST /api/doc/seal`, Quantum Document Vault |
+| 3 | **Document sealing (`.qsig`)** — SHA-256 file hash + HMAC bound to the QKD session key + **AES-256-GCM** encrypted payload (metadata bound as AAD), packed inside an **opaque v3 envelope** — opening the file in an editor shows noise, not the document — up to **5 MB** | `sealing` crate, `POST /api/doc/seal`, Quantum Document Vault |
 | 4 | **P2P transfer portal** — real laptop-to-laptop transfer over HTTP + the simulated relay-route transfer, with a live per-stage log | `POST /api/doc/send` + `/api/doc/receive` + `/api/doc/inbox`, `POST /api/doc/transfer` (SSE), Peer-to-Peer panel |
 | 5 | **Merkle-tree audit ledger** — hash-chained, append-only event log with Merkle root + inclusion proofs (forensics / non-repudiation) | `audit` crate, `/api/audit/*`, ledger panel |
 | 6 | **Interactive TUI dashboard** — ratatui terminal UI with live QBER sparkline, relay route, vault actions, audit tail | `tui` crate — `cargo run -p tui` |
@@ -85,38 +85,58 @@ The degraded band rides on the *configured noise floor*, so a clean run at
 current noise can physically explain. A 1/3-ceiling QBER can only come from
 basis collapse, and basis collapse can only come from a measurement.
 
-### 3 · Secure document signing & sealing (`.qsig`)
-
-The product layer: any file up to **5 MB** (PDF, image, contract) bound to the
+### 3 · Secure document signing & sealing (`.qsig`)The product layer: any file up to **5 MB** (PDF, image, contract) bound to the
 QKD-derived session key. **Quantum Document Vault** in the dashboard: drop a
 file, seal, download the portable `.qsig` container; verify re-checks
 everything.
 
-A `.qsig` (magic `QSIG1`, format v2) packs: file metadata + SHA-256, an
-**HMAC-SHA256 tag over (metadata ‖ file bytes) under the QKD session key**,
-a fresh per-seal nonce, the payload encrypted with **AES-256-GCM** (the
+**The lock is real now — v3 opaque envelope.** A sealed `.qsig` is not a
+readable JSON file with the text pasted inside. The entire container (file
+name, size, hashes, timestamps — every byte of metadata) is serialized to
+JSON and **sealed under AES-256-GCM with the QDS session key**. The only
+cleartext is a one-line header:
+
+```
+QSIG3 3 <nonce> <key-commitment>\n<binary ciphertext — pure noise>
+```
+
+Open a sealed file in Notepad and you see garbage — no name, no hash, no
+plaintext. The header's key commitment (SHA-256 of the canonical key) lets a
+server tell *which* session key sealed it without leaking the key, and lets
+verification fail with a precise reason ("sealed under a different session
+key — key possibly compromised") instead of silent garbage. Anyone without
+the key sees nothing; anyone with the key gets the container decoded and the
+two-factor verify runs as before. Legacy v1/v2 clear-JSON containers still
+verify for compatibility; **all new seals are v3 envelopes**.
+
+Inside the envelope, the container packs: file metadata + SHA-256, an
+**HMAC-SHA256 tag over (metadata ‖ file bytes) under the QKD session key**, a
+fresh per-seal nonce, the payload encrypted with **AES-256-GCM** (the
 metadata is bound as GCM *associated data*, so a swapped document with an
-intact body fails decryption), the payload serialized as base64 (a 5 MB file
-stays a ~6.7 MB container instead of ballooning to ~20 MB of JSON digits), a
-**key commitment** (SHA-256 of the canonical key — exposes wrong/compromised
-keys without leaking them), and the **audit-ledger Merkle root at seal time**.
+intact body fails decryption), a **key commitment**, and the **audit-ledger
+Merkle root at seal time**.
 
 - Flip **one byte** anywhere — file or metadata — and verification fails
   instantly with a note naming the failed check.
 - Verifying under a different session key fails the commitment:
   *"document sealed under a different session key (key possibly compromised)"*.
 - Legacy v1 containers (XOR keystream payload) still verify for compatibility;
-  new seals are always v2/GCM.
+  new seals are always v3 opaque envelopes.
 
 ### 4 · Secure peer-to-peer transfer (real laptops + simulated route)
 
 **Real laptop-to-laptop transfer** (`POST /api/doc/send`): the sender's server
-seals the file and POSTs the encrypted container to the recipient's server
-(`peer_url`) over HTTP, addressed by username (`to_user`); it lands in the
-recipient's **inbox** (`/api/doc/inbox`) for one-click verification. Only the
-AES-GCM ciphertext crosses the network — without the QKD session key the peer
-sees nothing. Both accounts can also live on one server (local user-to-user
-delivery) or span two laptops (`HOST=0.0.0.0` exposes the API on the LAN).
+seals the file into a v3 envelope and POSTs the encrypted container to the
+recipient's server (`peer_url`) over HTTP, addressed by username (`to_user`);
+it lands in the recipient's **inbox** (`/api/doc/inbox`) for one-click
+verification — and the sender keeps a separate **outbox** record, so sent
+copies never pollute the inbox. Only the AES-GCM ciphertext crosses the
+network — without the QKD session key the peer sees nothing (the
+`/api/doc/wire-proof` endpoint computes the wire entropy live: ~8.0 bits/byte
+= indistinguishable from random). Both accounts can also live on one server
+(local user-to-user delivery) or span two laptops (`HOST=0.0.0.0` exposes the
+API on the LAN); the claim-code **relay deposit** flow covers users on
+different networks who can't dial each other directly.
 
 **Simulated transfer portal** (`POST /api/doc/transfer`): pick a file, set
 hops + noise, **Send**. The portal runs seal → transmit over the relay route
@@ -173,6 +193,11 @@ not policy).
 - Enable **Shamir quorum seal** (k-of-m) in the Vault, seal, then toggle
   officers: fewer than k → *"unlock rejected — only N valid shares"*;
   k of them → *"unlocked via quorum k-of-m"*, recorded in the ledger.
+- **Cross-account unlock**: officers are real user accounts — each logs in on
+  any laptop and **pledges** their share to the sealant from their own
+  session; k pledges reconstruct the key server-side and the seal opens.
+  The pledge flow unseals the v3 envelope with the reconstructed key before
+  the two-factor verify, so envelopes and quorum compose.
 - Officer commitments let the server validate presented shares without
   holding them.
 - Documented subtlety: byte 31 of the key is masked into GF(251)
@@ -214,8 +239,9 @@ sih26141/
 ├── server/     Axum REST + SSE API: /api/run, /api/simulate, /api/events,
 │               /api/qds/{setup,sign,verify,attacks,forgery-analysis,events},
 │               /api/auth/{register,login,logout,me,users} (multi-user accounts),
-│               /api/doc/{seal,verify,quorum,quorum/unlock,transfer,send,
-│               receive,inbox,attack,session}, /api/audit/*
+│               /api/doc/{qds/key,seal,verify,open,quorum/*,transfer,send,
+│               receive,inbox,outbox,wire-proof,relay/*,attack,attack-theater,
+│               session}, /api/audit/*
 │               + persistent JSONL logs (qds_events.jsonl, audit_log.jsonl,
 │               users.json) — audit chain reloads on startup
 ├── tui/        ratatui terminal dashboard: live QBER sparkline, relay route,
@@ -295,20 +321,33 @@ cd frontend && npm run dev     # http://localhost:5173
 | `/api/auth/me` | GET | Who am I (requires token) |
 | `/api/auth/users` | GET | Registered usernames (the send-panel address book) |
 | `/api/doc/session` | GET | Current user's key state: has_key, key commitment, quorum info |
-| `/api/doc/seal` | POST | Seal an uploaded file (base64 `content_b64`, ≤ 5 MB) into a `.qsig` container; optional `use_quorum` + k-of-m params |
+| `/api/doc/qds/key` | POST | **Derive QDS key** — six-state QDS key generation (optional `seed`); this key seals/unlocks documents |
+| `/api/doc/seal` | POST | Seal an uploaded file (base64 `content_b64`, ≤ 5 MB) into a `.qsig` container; optional `use_quorum` + k-of-m params; embeds a teleport-QDS signature |
 | `/api/doc/verify` | POST | Verify a `.qsig` container (`container_b64`) against the user's session keys (single flipped byte ⇒ instant failure) |
+| `/api/doc/open` | POST | **Unlock & download** — verifies the embedded QDS signature via Trent, decrypts the AES-256-GCM payload, returns the original file |
 | `/api/doc/quorum` | GET | Officer share view for the quorum-unlock demo |
+| `/api/doc/quorum/distribute` | POST | Cross-account multiparty: deliver officer shares to named user accounts (holders never see the bytes) |
+| `/api/doc/quorum/pledge` | POST | An officer pledges their distributed share from their own login |
 | `/api/doc/quorum/unlock` | POST | Present k officer shares to reconstruct the key and unlock the container |
 | `/api/doc/transfer` | POST | Simulated P2P transfer over the relay route; emits per-stage SSE `transfer_log` events |
 | `/api/doc/send` | POST | **Real** transfer: seal + deliver to `to_user` (local inbox) or `peer_url` (remote laptop `/api/doc/receive`) |
 | `/api/doc/receive` | POST | Peer-side intake: files an inbound container into the addressed user's inbox |
 | `/api/doc/inbox` | GET | List the logged-in user's inbox (`?full=false` for metadata only) |
 | `/api/doc/inbox/verify` | POST | Verify one inbox item — a tampered or substituted container fails here with the exact reason |
+| `/api/doc/inbox/{id}` | DELETE | Delete one of your received items |
+| `/api/doc/outbox` | GET | List what **you sent** (kept separate from the inbox) |
+| `/api/doc/outbox/{id}` | DELETE | Delete one of your sent items |
+| `/api/doc/wire-proof` | GET | **Proof of protection in transit** — what actually crossed the network: ciphertext sample, entropy estimate, SHA-256 before/after |
+| `/api/doc/relay/deposit` | POST | Cross-LAN transfer: deposit a sealed container into the cloud relay, get a `XXXX-XXX` claim code |
+| `/api/doc/relay/claim` | POST | Pick up a relay deposit by claim code (works across different LANs/networks) |
+| `/api/doc/relay/inbox` | GET | List your relay pickups |
 | `/api/doc/attack` | POST | Mallory's tamper/swap_meta/reseal/truncate modes (demonstrates cryptographic rejection) |
+| `/api/doc/attack-theater` | POST | **Real-time staged attack** — step-by-step: capture → inspect wire → tamper → forward → victim's live rejection report |
 | `/api/doc/events` | GET | SSE: live transfer-log + attack events |
 | `/api/audit/events` | GET | Audit ledger entries + current Merkle root |
 | `/api/audit/proof?seq=N` | GET | Merkle inclusion proof for entry N |
 | `/api/audit/verify` | GET | Re-derive the whole chain; names the entry where tampering occurred |
+| `/api/audit/clear` | POST | **DEV ONLY** — clear the ledger; requires the `DEV_TOKEN` env var (403 without it) |
 
 ```bash
 # Local server example (replace with your Render URL for the deployed backend):
@@ -322,9 +361,9 @@ curl -X POST localhost:8080/api/run \
 The video scenario, runnable on one machine (three processes) or three real
 laptops — see `.freebuff/run.md` for launchers and a scripted end-to-end:
 
-1. **Laptop A — Alice:** register `alice`, run a QKD exchange (distills her
-   session key), seal a document in the Vault.
-2. **Laptop B — Bob:** register `bob`, run the QKD exchange with the **same
+1. **Laptop A — Alice:** register `alice`, press **Derive QDS key** (Seed
+   = 424242) in the Vault, then seal a document.
+2. **Laptop B — Bob:** register `bob`, **Derive QDS key** with the **same
    seed** (identical distilled key), leave the dashboard open.
 3. **Laptop A → B:** Peer-to-Peer panel → recipient `bob` + Bob's
    `http://<bob-lan-ip>:8080` → **Send to laptop**. The encrypted container
@@ -336,9 +375,11 @@ laptops — see `.freebuff/run.md` for launchers and a scripted end-to-end:
    audit ledgers of the respective machines, each verifiable with
    `/api/audit/verify`.
 
-> Shared-seed keys are a demo convention (both laptops run the same scripted
-> simulation); a production deployment would transport one-time pads over the
-> QKD channel itself.
+> Shared-seed keys are a demo convention (both laptops derive keys from the
+> same six-state QDS seed); a production deployment would transport one-time
+> pads over the QKD channel itself. Self-hosting multiple servers: run each
+> with the same `TRENT_SEED` env var (e.g. `424242`) so embedded QDS
+> signatures verify across machines.
 
 ### Using the deployed stack
 

@@ -93,12 +93,18 @@ created from the UI.
 
 1. **Laptop A — register alice.** AuthBar → username `alice`, password →
    **register** → **log in**. The header shows `👤 alice`.
-2. **Laptop B — register bob.** Same steps on the other laptop. Then run one
-   QKD exchange: set **Seed = 424242**, press **Run Secure + Attack** (the
-   secure scenario distills bob's session key).
-3. **Laptop A — alice does the same** (Seed = 424242, Run). Both laptops now
-   hold the SAME session key — that is the demo's "quantum channel"
-   (see the shared-seed note in the README).
+2. **Laptop B — register bob.** Same steps on the other laptop. Then press
+   **Derive QDS key** in the Vault (Seed = 424242) — six-state QDS key
+generation distills bob's session key.
+3. **Laptop A — alice does the same** (Seed = 424242). Both laptops now
+   hold the SAME QDS-derived session key (see the shared-seed note in the
+   README).
+
+> **Self-hosting requirement:** every server that will verify another
+> server's containers must run with the same `TRENT_SEED` env var (any
+> fixed value, e.g. `424242`) — the teleport-QDS notary tables are seeded
+> from it, so signatures made on laptop A verify on laptop B. The Render
+> blueprint sets it; set it manually when launching `server.exe` yourself.
 4. **Laptop A — seal a document.** Quantum Document Vault → drop a file →
    **Seal → .qsig** (auto-downloads).
 5. **Laptop A → B — real P2P transfer.** Peer-to-Peer Transfer panel →
@@ -190,8 +196,12 @@ accounts give you the isolation).
 ## 7. Known demo conventions & limits
 
 - **Shared-seed keys:** two laptops hold the same session key because both
-  ran the QKD simulation with the same seed. A real deployment would transport
-  a one-time pad over the QKD link itself.
+  derived it from the same six-state QDS seed. A real deployment would
+  transport a one-time pad over the QKD link itself.
+- **`TRENT_SEED` must match across servers** for cross-laptop QDS
+  verification (the embedded teleport-QDS signature is made by the sealing
+  server's notary; same seed = same notary tables). On Render it is set in
+  the blueprint; locally the `.freebuff/launch*.ps1` scripts set it.
 - **Sessions are memory-only:** a server restart logs everyone out (accounts
   persist; tokens do not). On Render free tier, restarts happen — re-login and
   continue.

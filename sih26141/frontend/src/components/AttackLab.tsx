@@ -1,5 +1,63 @@
 import { useState } from 'react'
-import { b64ToBytes, bytesToB64, docApi, type AttackMode, type AttackResponse } from '../api'
+import {
+  b64ToBytes,
+  bytesToB64,
+  docApi,
+  type AttackMode,
+  type AttackResponse,
+  type TheaterResponse,
+} from '../api'
+
+const LEVEL_COLOR: Record<string, string> = {
+  info: 'var(--text-dim)',
+  ok: 'var(--green)',
+  warn: 'var(--amber)',
+  error: 'var(--red)',
+}
+
+/** Crossed-swords mark, drawn — not an emoji (stroke inherits currentColor). */
+function CrossedIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden>
+      <path d="M5 4l10.5 10.5M19 4L8.5 14.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <path d="M7 17.5L4.5 20M17 17.5l2.5 2.5M14.5 15.5L20 21M9.5 15.5L4 21" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+/** Live playback of the theater steps (one step every 900 ms). */
+function TheaterSteps({ theater }: { theater: TheaterResponse }) {
+  const [shown, setShown] = useState(1)
+  const total = theater.steps.length
+  if (shown < total) {
+    setTimeout(() => setShown((s) => Math.min(s + 1, total)), 900)
+  }
+  return (
+    <div className="transfer-log" style={{ maxHeight: 320 }}>
+      {theater.steps.slice(0, shown).map((s) => (
+        <div key={s.step} className="transfer-line" style={{ color: LEVEL_COLOR[s.level] ?? 'var(--text-dim)' }}>
+          <span className="transfer-stage">{s.step}</span>
+          <span className="transfer-node">{s.actor}</span>
+          <span className="transfer-detail">
+            <b>{s.title}</b> — {s.detail}
+            {s.evidence?.ciphertext_sample_hex ? (
+              <code style={{ display: 'block', wordBreak: 'break-all', marginTop: 2 }}>
+                wire: {String(s.evidence.ciphertext_sample_hex).slice(0, 64)}…
+              </code>
+            ) : null}
+          </span>
+        </div>
+      ))}
+      {shown >= total && (
+        <div className={`verdict ${theater.rejected ? 'verdict-ok' : 'verdict-bad'}`} style={{ marginTop: 8 }}>
+          {theater.rejected
+            ? `${theater.victim} REJECTED the ${theater.mode} attack — ${theater.victim_verdict.note}`
+            : `container was ACCEPTED — investigate!`}
+        </div>
+      )}
+    </div>
+  )
+}
 
 const MODES: { id: AttackMode; label: string; hint: string }[] = [
   {
@@ -40,12 +98,14 @@ export function AttackLab({ onLog }: { onLog: (line: string) => void }) {
   const [recipient, setRecipient] = useState('bob')
   const [busy, setBusy] = useState(false)
   const [attack, setAttack] = useState<AttackResponse | null>(null)
+  const [theater, setTheater] = useState<TheaterResponse | null>(null)
   const [forwarded, setForwarded] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const onFile = (f: File | null) => {
     setError(null)
     setAttack(null)
+    setTheater(null)
     setForwarded(false)
     if (!f) {
       setFileName(null)
@@ -67,6 +127,7 @@ export function AttackLab({ onLog }: { onLog: (line: string) => void }) {
     setBusy(true)
     setError(null)
     setAttack(null)
+    setTheater(null)
     setForwarded(false)
     try {
       const resp = await docApi.attack({
@@ -75,7 +136,36 @@ export function AttackLab({ onLog }: { onLog: (line: string) => void }) {
         from_label: label.trim() || 'mallory',
       })
       setAttack(resp)
-      onLog(`attack [{${resp.mode}}] → ${resp.description}`)
+      onLog(`attack [${resp.mode}] → ${resp.description}`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // The real-time theater: interception → failed decryption → tamper →
+  // forward → victim's live rejection → audit entry, streamed step by step.
+  const runTheater = async () => {
+    if (!containerB64) return
+    setBusy(true)
+    setError(null)
+    setAttack(null)
+    setTheater(null)
+    setForwarded(false)
+    try {
+      const resp = await docApi.attackTheater({
+        container_b64: containerB64,
+        mode,
+        victim: recipient.trim() || 'bob',
+        attacker: label.trim() || 'mallory',
+      })
+      setTheater(resp)
+      onLog(
+        `theater #${resp.theater_id}: ${resp.mode} vs ${resp.victim} — ${
+          resp.rejected ? 'REJECTED' : 'NOT rejected'
+        }`,
+      )
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -122,11 +212,11 @@ export function AttackLab({ onLog }: { onLog: (line: string) => void }) {
   return (
     <section className="panel">
       <div className="panel-title-row">
-        <div className="panel-title">⚔ Attack Lab — Mallory vs the seal</div>
+        <div className="panel-title">Attack Lab — Mallory vs the seal</div>
         {busy && <span className="pulse-dot" aria-label="working" />}
       </div>
 
-      {error && <div className="error-banner">⚠ {error}</div>}
+      {error && <div className="error-banner">{error}</div>}
 
       <div className="p2p-controls">
         <label className="dropzone dropzone-sm">
@@ -138,7 +228,7 @@ export function AttackLab({ onLog }: { onLog: (line: string) => void }) {
             </>
           ) : (
             <>
-              <span className="dropzone-icon">⚔</span>
+              <span className="dropzone-icon"><CrossedIcon /></span>
               <span>capture a .qsig container</span>
             </>
           )}
@@ -172,14 +262,29 @@ export function AttackLab({ onLog }: { onLog: (line: string) => void }) {
             spellCheck={false}
           />
         </label>
-        <button className="btn btn-primary" onClick={runAttack} disabled={!containerB64 || busy}>
-          {busy ? 'Working…' : 'Run attack →'}
+        <button className="btn btn-primary" onClick={runTheater} disabled={!containerB64 || busy}>
+          {busy ? 'Staging…' : 'Run attack theater (live)'}
+        </button>
+        <button className="btn" onClick={runAttack} disabled={!containerB64 || busy}>
+          {busy ? 'Working…' : 'Attack only (no forward)'}
         </button>
       </div>
 
+      {theater && (
+        <div className="attack-result">
+          <div className="dim" style={{ marginBottom: 6 }}>
+            theater #{theater.theater_id} — wire entropy {theater.wire.ciphertext_entropy.toFixed(2)} bits/byte ·{' '}
+            {theater.wire.qds_signature_attached ? 'QDS-signed container' : 'unsigned container'}
+          </div>
+          <TheaterSteps theater={theater} />
+        </div>
+      )}
+
       <div className="dim" style={{ margin: '4px 0 10px' }}>
         {selected.hint}. Pick up the .qsig container Bob sealed (from the Document Vault download or
-        the peer transfer) — Mallory mangles it, then forwards her forgery.
+        the peer transfer) — then <b>Run attack theater</b> to watch the whole story live:
+        interception on the wire (unreadable ciphertext shown), Mallory's tamper, the forward, and
+        the victim's cryptographic REJECTION with the exact failed check — every step audit-logged.
       </div>
 
       {attack && (

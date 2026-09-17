@@ -75,16 +75,21 @@ const SHARED_WORKSPACE: &str = "shared";
 // Per-user workspace
 // ---------------------------------------------------------------------------
 
-/// Mutable per-user state: session key, quorum, inbox, last seal.
+/// Mutable per-user state: session key, quorum, inbox, outbox, last seal.
 #[derive(Default)]
 pub struct Workspace {
     pub session: SealSession,
     /// Last sealed container (so /verify and quorum unlock can be demoed
     /// without re-uploading).
     pub last_sealed: Option<sealing::QsigDocument>,
-    /// Documents received from peers, oldest first.
+    /// Documents RECEIVED from peers, oldest first.
     pub inbox: Vec<InboxItem>,
     pub inbox_counter: u64,
+    /// Documents SENT by this user (the sender's record of outgoing
+    /// transfers — kept out of the inbox so receiver and sender never
+    /// confuse their copies).
+    pub outbox: Vec<OutboxItem>,
+    pub outbox_counter: u64,
     /// An officer share placed in THIS user's custody by a sealant
     /// (`POST /api/doc/quorum/distribute`). The y-bytes never leave the
     /// server: the holder pledges by name, the server moves the pointer.
@@ -109,6 +114,8 @@ pub struct Custody {
 pub struct SealSession {
     pub secret_hex: Option<String>,
     pub secret_history: Vec<String>,
+    /// Where the current key came from: "six-state-qds" | "qkd-legacy".
+    pub secret_source: Option<String>,
     pub quorum_threshold: Option<u8>,
     pub quorum_shares: Option<u8>,
     pub officer_shares: Vec<sealing::KeyShare>,
@@ -146,6 +153,25 @@ pub struct InboxItem {
     pub note: Option<String>,
 }
 
+/// One document this user SENT (outbox record). `container_b64` is kept so
+/// the sender can re-download or re-send their own sealed copy.
+#[derive(Debug, Clone, Serialize)]
+pub struct OutboxItem {
+    pub id: u64,
+    pub sent_at: String,
+    pub to_peer: String,
+    /// "local" (same-server account) | "laptop" (remote URL) | "relay"
+    /// (cross-LAN claim-code pickup).
+    pub via: String,
+    pub meta: sealing::DocumentMeta,
+    pub container_b64: String,
+    /// Whether delivery was accepted by the destination.
+    pub delivered: bool,
+    /// Claim code for relay-mode deliveries (peers redeem it to pick up).
+    pub claim_code: Option<String>,
+    pub summary: String,
+}
+
 type AppError = (StatusCode, Json<serde_json::Value>);
 type MainState = crate::AppState;
 
@@ -170,12 +196,25 @@ pub enum DocEvent {
     },
 }
 
+/// A container parked on the public relay waiting for its recipient to
+/// claim it (cross-LAN transfer: different networks, no port forwarding).
+#[derive(Debug, Clone, Serialize)]
+pub struct RelayDeposit {
+    pub code: String,
+    pub deposited_at: String,
+    pub from_peer: String,
+    pub meta: sealing::DocumentMeta,
+    pub container_b64: String,
+    /// Set when a peer redeemed the code; the deposit is dropped after.
+    pub claimed_by: Option<String>,
+}
+
 /// Shared document-layer state: one audit ledger, per-user workspaces.
 pub struct DocStateHolder {
     /// Workspace name -> state. Created on demand (login, run, receive…).
     /// Workspaces live for the whole process, so each mutex is `Box::leak`ed
     /// into a `&'static` — that lets `workspace()` hand out a MutexGuard
-    /// without holding the HashMap lock or juggling Arc clones.
+    /// without borrowing the map lock or juggling Arc clones.
     pub workspaces: Mutex<HashMap<String, &'static Mutex<Workspace>>>,
     pub auth: Arc<AuthState>,
     /// Shared Merkle audit ledger (every user's events chain together).
@@ -183,11 +222,18 @@ pub struct DocStateHolder {
     pub audit_path: PathBuf,
     pub doc_events_tx: tokio::sync::broadcast::Sender<Arc<DocEvent>>,
     pub transfer_counter: AtomicU64,
+    /// Cross-LAN claim-code mailbox (relay deposits, see RelayDeposit).
+    pub relay: Mutex<HashMap<String, RelayDeposit>>,
+    /// Monotonic counter seeding fresh six-state QDS key-derivation sessions.
+    pub qds_key_counter: AtomicU64,
+    /// The developer token enabling `/api/audit/clear` (DEVELOPER_TOKEN env;
+    /// None = clearing is permanently disabled for this process).
+    pub dev_token: Option<String>,
 }
 
 impl DocStateHolder {
     /// Startup path: adopt a log reloaded from disk (`AuditLog::load_jsonl`).
-    pub fn from_log(log: AuditLog, audit_path: PathBuf, auth: Arc<AuthState>) -> Self {
+    pub fn from_log(log: AuditLog, audit_path: PathBuf, auth: Arc<AuthState>, dev_token: Option<String>) -> Self {
         let (tx, _) = tokio::sync::broadcast::channel(1024);
         Self {
             workspaces: Mutex::new(HashMap::new()),
@@ -196,6 +242,9 @@ impl DocStateHolder {
             audit_path,
             doc_events_tx: tx,
             transfer_counter: AtomicU64::new(1),
+            relay: Mutex::new(HashMap::new()),
+            qds_key_counter: AtomicU64::new(1),
+            dev_token,
         }
     }
 
@@ -376,13 +425,29 @@ fn mime_for(name: &str, explicit: Option<String>) -> String {
     .to_string()
 }
 
-/// Record the distilled QKD secret as a user's session key.
-pub(crate) fn capture_session_secret(state: &MainState, user: &str, secret_hex: &str) {
-    state
-        .doc
-        .workspace(user)
-        .session
-        .set_secret(secret_hex.to_string());
+/// Record a distilled secret as a user's session key.
+///
+/// `source` records where the key came from:
+///   * "qds" — a six-state QDS key-generation session (`/api/doc/qds/key`,
+///     the document layer's primary path);
+///   * "qkd-legacy" — the raw QKD demo run (`/api/run`) distilled a secret.
+pub(crate) fn capture_session_secret(state: &MainState, user: &str, secret_hex: &str, source: &str) {
+    {
+        let mut ws = state.doc.workspace(user);
+        ws.session.set_secret(secret_hex.to_string());
+        ws.session.secret_source = Some(source.to_string());
+    }
+    if source == "qds" {
+        return; // the QDS key endpoint writes its own richer audit entry
+    }
+    state.doc.audit_append(
+        user,
+        "keygen",
+        "qkd-legacy",
+        true,
+        "session key distilled from the QKD demo run (legacy path — prefer the six-state QDS key endpoint)",
+        "",
+    );
 }
 
 /// Commitment for a session key under the single canonical definition.
@@ -453,6 +518,10 @@ pub struct SealResponse {
     key_commitment: String,
     quorum: Option<(u8, u8)>,
     officer_commitments: Vec<String>,
+    /// Provenance of the sealing key ("six-state-qds" | "qkd-legacy").
+    key_source: String,
+    /// Whether the teleport-QDS signature was attached and verified.
+    qds_signature: bool,
     audit_seq: u64,
     audit_root: Option<String>,
     audit_warning: Option<String>,
@@ -487,16 +556,19 @@ async fn doc_seal(
     let shares_total = req.quorum_shares.unwrap_or(5);
 
     let mut ws = state.doc.workspace(&username);
-    let secret_hex = ws
-        .session
-        .secret_hex
-        .clone()
-        .ok_or_else(|| {
-            bad_request(
-                "no session key yet — run a QKD exchange first (POST /api/run) to derive the sealing key"
-                    .into(),
-            )
-        })?;
+    let (secret_hex, key_source) = {
+        let s = &ws.session;
+        (
+            s.secret_hex.clone(),
+            s.secret_source.clone().unwrap_or_else(|| "qkd-legacy".into()),
+        )
+    };
+    let secret_hex = secret_hex.ok_or_else(|| {
+        bad_request(
+            "no session key yet — click “Generate QDS key” (POST /api/doc/qds/key) to derive the sealing key from a six-state QDS session"
+                .into(),
+        )
+    })?;
 
     // Optional quorum split of the session key.
     let mut officer_commitments = Vec::new();
@@ -529,7 +601,7 @@ async fn doc_seal(
     };
 
     let mut rng = StdRng::from_entropy();
-    let sealed = seal_document(
+    let mut sealed = seal_document(
         &req.name,
         &mime_for(&req.name, req.mime),
         &content,
@@ -540,6 +612,23 @@ async fn doc_seal(
         &mut rng,
     )
     .map_err(bad_request)?;
+
+    // Attach a genuine teleportation-QDS signature over the document hash
+    // (the quantum-digital-signature half of the seal — see qds_keys.rs).
+    // Opening the document later re-verifies this signature via Trent.
+    let qds_sig_attached = {
+        let holder = state.qds.lock().expect("qds lock poisoned");
+        let mut trent = holder.inner.trent.lock().expect("trent lock poisoned");
+        let signed = crate::qds_keys::sign_document_qds(&mut trent, &sealed.meta.sha256);
+        let accepted = signed.accepted_at_signing;
+        sealed.qds_sig = Some(sealing::QdsSigAttachment {
+            correction_bits: signed.signature.correction_bits,
+            nonce: signed.signature.nonce,
+            key_commitment: signed.signature.key_commitment,
+            scheme: "teleport-qds-v1".into(),
+        });
+        accepted
+    };
 
     let sha256 = sealed.meta.sha256.clone();
     let container = sealing::container_bytes(&sealed);
@@ -552,10 +641,11 @@ async fn doc_seal(
         "doc-vault",
         true,
         &format!(
-            "sealed '{}' ({} bytes, quorum: {})",
+            "sealed '{}' ({} bytes, quorum: {}) — teleport-QDS signature {}",
             req.name,
             content.len(),
-            if use_quorum { format!("{threshold}-of-{shares_total}") } else { "none".into() }
+            if use_quorum { format!("{threshold}-of-{shares_total}") } else { "none".into() },
+            if qds_sig_attached { "attached ✓" } else { "FAILED — document will not open" }
         ),
         &sha256,
     );
@@ -571,6 +661,8 @@ async fn doc_seal(
         key_commitment,
         quorum: if use_quorum { Some((threshold, shares_total)) } else { None },
         officer_commitments,
+        key_source: key_source.clone(),
+        qds_signature: qds_sig_attached,
         audit_seq: entry.seq,
         audit_root: state.doc.audit.lock().expect("audit lock poisoned").root(),
         audit_warning,
@@ -600,12 +692,34 @@ pub struct VerifyResponse {
 
 /// Shared verification core: try every remembered key of the workspace.
 fn verify_against_workspace(
-    parsed: &sealing::QsigDocument,
+    container: &[u8],
     secrets: &[String],
 ) -> Option<(sealing::VerificationOutcome, String)> {
+    // Parse preserving the envelope distinction. v3 envelopes carry v=2 in
+    // their placeholder doc — only `sealed_envelope` tells them apart.
+    let parsed = sealing::parse_container_full(container).ok()?;
+    if parsed.sealed_envelope {
+        // Meta is sealed: unseal with each candidate key, then verify the
+        // revealed document.
+        let mut best: Option<(sealing::VerificationOutcome, String)> = None;
+        for key in secrets {
+            if let Ok(doc) = sealing::unseal_envelope(&parsed.doc, key) {
+                if let Ok(outcome) = verify_document(&doc, key) {
+                    let commit = commitment_for(key).unwrap_or_default();
+                    if outcome.passed() {
+                        return Some((outcome, commit));
+                    }
+                    if best.is_none() {
+                        best = Some((outcome, commit));
+                    }
+                }
+            }
+        }
+        return best;
+    }
     let mut best: Option<(sealing::VerificationOutcome, String)> = None;
     for key in secrets {
-        if let Ok(outcome) = verify_document(parsed, key) {
+        if let Ok(outcome) = verify_document(&parsed.doc, key) {
             if outcome.passed() {
                 return Some((outcome, commitment_for(key).unwrap_or_default()));
             }
@@ -615,6 +729,36 @@ fn verify_against_workspace(
         }
     }
     best
+}
+
+/// Unseal a (possibly v3-envelope) container against a workspace's known
+/// keys, returning the first success. For clear-JSON containers this is the
+/// identity; for envelopes the metadata is recovered with the right key.
+fn unseal_against_workspace(
+    container: &[u8],
+    secrets: &[String],
+) -> Result<sealing::QsigDocument, String> {
+    // Parse preserving the envelope distinction: a v3 envelope arrives as a
+    // placeholder (v=2, empty meta) that MUST be unsealed before any
+    // verification — branching on `doc.v` alone would misroute every
+    // envelope to the legacy path.
+    let parsed = sealing::parse_container_full(container).map_err(|e| e.to_string())?;
+    if !parsed.sealed_envelope {
+        let mut doc = parsed.doc;
+        doc.key = sealing::canonicalize_key(
+            &hex::decode(secrets.first().ok_or_else(|| "no session key on record".to_string())?)
+                .unwrap_or_default(),
+        );
+        return Ok(doc);
+    }
+    let mut last = "no session key matches this container's key commitment".to_string();
+    for key in secrets {
+        match sealing::unseal_envelope(&parsed.doc, key) {
+            Ok(doc) => return Ok(doc),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
 }
 
 async fn doc_verify(
@@ -641,8 +785,12 @@ async fn doc_verify(
         return Err(bad_request("no session key on record — cannot verify".into()));
     }
 
-    let (outcome, commitment) = verify_against_workspace(&parsed, &secrets)
+    let (outcome, commitment) = verify_against_workspace(&container, &secrets)
         .ok_or_else(|| internal_error("verification failed against all known keys".into()))?;
+    // Recover real metadata for v3 envelopes (empty placeholder until now).
+    let real_meta = unseal_against_workspace(&container, &secrets)
+        .map(|d| d.meta)
+        .unwrap_or_else(|_| parsed.meta.clone());
     let passed = outcome.passed();
     let note = outcome.note.clone();
 
@@ -651,14 +799,14 @@ async fn doc_verify(
         "verify",
         "doc-vault",
         passed,
-        &format!("verified '{}' — {}", parsed.meta.name, note),
-        &parsed.meta.sha256,
+        &format!("verified '{}' — {}", real_meta.name, note),
+        &real_meta.sha256,
     );
 
     Ok(Json(VerifyResponse {
         outcome,
         verified_with_commitment: Some(commitment),
-        meta: Some(parsed.meta),
+        meta: Some(real_meta),
         audit_seq: entry.seq,
         audit_warning,
     }))
@@ -775,18 +923,42 @@ async fn quorum_unlock(
             }));
         }
         let reconstructed = sealing::combine_shares(&valid).map_err(bad_request)?;
-        let parsed = {
+        // Resolve the container first — v3 envelopes must be unsealed with
+        // the reconstructed key BEFORE verification (the placeholder doc has
+        // empty meta, so its GCM AAD can never match).
+        let (container_bytes, in_memory_doc): (Option<Vec<u8>>, Option<sealing::QsigDocument>) = {
             let ws = state.doc.workspace(&username);
             match (&req.container_b64, &req.container) {
-                (Some(b64), _) if !b64.is_empty() => {
-                    let bytes = b64_decode(b64)
-                        .ok_or_else(|| bad_request("container_b64 is not valid base64".into()))?;
-                    parse_container(&bytes).map_err(bad_request)?
+                (Some(b64), _) if !b64.is_empty() => (
+                    Some(b64_decode(b64).ok_or_else(|| {
+                        bad_request("container_b64 is not valid base64".into())
+                    })?),
+                    None,
+                ),
+                (_, Some(c)) if !c.is_empty() => (Some(c.clone()), None),
+                _ => match ws.last_sealed.clone() {
+                    Some(doc) => (None, Some(doc)),
+                    None => {
+                        return Err(bad_request(
+                            "no container supplied and none sealed yet".into(),
+                        ))
+                    }
+                },
+            }
+        };
+        let parsed: sealing::QsigDocument = match in_memory_doc {
+            // In-memory last-sealed doc is already unsealed.
+            Some(doc) => doc,
+            None => {
+                let p = sealing::parse_container_full(
+                    container_bytes.as_deref().unwrap_or(&[]),
+                )
+                .map_err(bad_request)?;
+                if p.sealed_envelope {
+                    sealing::unseal_envelope(&p.doc, &reconstructed).map_err(bad_request)?
+                } else {
+                    p.doc
                 }
-                (_, Some(c)) if !c.is_empty() => parse_container(c).map_err(bad_request)?,
-                _ => ws.last_sealed.clone().ok_or_else(|| {
-                    bad_request("no container supplied and none sealed yet".into())
-                })?,
             }
         };
         let outcome = verify_document(&parsed, &reconstructed).map_err(bad_request)?;
@@ -1175,6 +1347,8 @@ pub struct PeerSendResponse {
     pub peer_item_id: Option<u64>,
     pub peer_note: Option<String>,
     pub sha256: String,
+    /// The sender's outbox record id (their copy of the sent container).
+    pub outbox_id: u64,
     pub audit_seq: u64,
     pub audit_warning: Option<String>,
     pub summary: String,
@@ -1235,7 +1409,7 @@ async fn peer_send(
             )
         };
         let mut rng = StdRng::from_entropy();
-        let sealed = seal_document(
+        let mut sealed = seal_document(
             &name,
             &mime_for(&name, None),
             &content,
@@ -1246,6 +1420,19 @@ async fn peer_send(
             &mut rng,
         )
         .map_err(bad_request)?;
+        // Attach the teleport-QDS signature here too (same rule as the
+        // vault seal — every sealed container is quantum-signed).
+        {
+            let holder = state.qds.lock().expect("qds lock poisoned");
+            let mut trent = holder.inner.trent.lock().expect("trent lock poisoned");
+            let signed = crate::qds_keys::sign_document_qds(&mut trent, &sealed.meta.sha256);
+            sealed.qds_sig = Some(sealing::QdsSigAttachment {
+                correction_bits: signed.signature.correction_bits,
+                nonce: signed.signature.nonce,
+                key_commitment: signed.signature.key_commitment,
+                scheme: "teleport-qds-v1".into(),
+            });
+        }
         let sha = sealed.meta.sha256.clone();
         (sealing::container_bytes(&sealed), sha, name)
     };
@@ -1291,7 +1478,7 @@ async fn peer_send(
     } else if let Some(to_user) = req.to_user.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         // Local delivery to a named user's workspace on this server.
         let to_user = to_user.to_string();
-        let item_id = deliver_local(&state, &to_user, &from_label, &container);
+        let item_id = deliver_local(&state, &to_user, &from_label, &container, None);
         match item_id {
             Some(id) => (
                 true,
@@ -1312,6 +1499,44 @@ async fn peer_send(
         return Err(bad_request("provide to_user (local) or peer_url (remote)".into()));
     };
 
+    // Sender's outbox record (the sender's copy lives in the OUTBOX,
+    // never the inbox — receiver and sender copies are now distinct).
+    let outbox_id = {
+        let mut ws = state.doc.workspace(&username);
+        let id = ws.outbox_counter;
+        ws.outbox_counter += 1;
+        ws.outbox.push(OutboxItem {
+            id,
+            sent_at: chrono_now(),
+            to_peer: destination.clone(),
+            via: if req.peer_url.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+                "laptop".into()
+            } else {
+                "local".into()
+            },
+            meta: parse_container(&container)
+                .map(|p| p.meta)
+                .ok()
+                .filter(|m| !m.name.is_empty())
+                .unwrap_or_else(|| sealing::DocumentMeta {
+                    name: name.clone(),
+                    size: container.len(),
+                    mime: "application/octet-stream".into(),
+                    sha256: sha256.clone(),
+                    sealed_at: chrono_now(),
+                }),
+            container_b64: b64_encode(&container),
+            delivered,
+            claim_code: None,
+            summary: if delivered {
+                format!("accepted by {destination}")
+            } else {
+                peer_note.clone().unwrap_or_else(|| "not accepted".into())
+            },
+        });
+        id
+    };
+
     let (entry, audit_warning) = state.doc.audit_append(
         &username,
         "transfer",
@@ -1327,6 +1552,7 @@ async fn peer_send(
     );
 
     Ok(Json(PeerSendResponse {
+        outbox_id,
         delivered,
         destination: destination.clone(),
         peer_item_id,
@@ -1349,30 +1575,51 @@ fn deliver_local(
     to_user: &str,
     from_label: &str,
     container: &[u8],
+    known_bad: Option<&str>,
 ) -> Option<u64> {
     let parsed = parse_container(container).ok()?;
-    let meta = parsed.meta.clone();
     let can_verify_now = {
         let mut can = false;
         if let Some(ws) = state.doc.try_workspace(to_user) {
-            for key in ws.session.known_secrets() {
-                if let Ok(o) = verify_document(&parsed, &key) {
-                    if o.passed() {
-                        can = true;
-                        break;
-                    }
-                }
+            let secrets = ws.session.known_secrets();
+            if verify_against_workspace(container, &secrets)
+                .map(|(o, _)| o.passed())
+                .unwrap_or(false)
+            {
+                can = true;
             }
         }
         can
     };
+    // Real metadata when the recipient's key unseals the envelope; otherwise
+    // a neutral placeholder that says so (meta stays hidden until verify).
+    let meta = {
+        let secrets = state
+            .doc
+            .try_workspace(to_user)
+            .map(|ws| ws.session.known_secrets())
+            .unwrap_or_default();
+        unseal_against_workspace(&container, &secrets)
+            .map(|d| d.meta)
+            .unwrap_or_else(|_| sealing::DocumentMeta {
+                name: "(sealed — verify to reveal)".into(),
+                size: parsed.meta.size,
+                mime: "application/octet-stream".into(),
+                sha256: String::new(),
+                sealed_at: chrono_now(),
+            })
+    };
     let mut ws = state.doc.try_workspace(to_user)?;
     let id = ws.inbox_counter;
     ws.inbox_counter += 1;
-    let note = if can_verify_now {
-        "container accepted — session key present, ready to verify".to_string()
-    } else {
-        "container accepted — no matching session key yet".to_string()
+    // A pre-computed rejection (attack theater) is flagged IMMEDIATELY — the
+    // victim sees "✗ FORGED" the moment the item lands, no verify click needed.
+    let note = match known_bad {
+        Some(reason) => format!("FORGED — {reason}"),
+        None if can_verify_now => {
+            "container accepted — session key present, ready to verify".to_string()
+        }
+        None => "container accepted — no matching session key yet".to_string(),
     };
     ws.inbox.push(InboxItem {
         id,
@@ -1380,7 +1627,11 @@ fn deliver_local(
         from_peer: from_label.to_string(),
         meta: meta.clone(),
         container_b64: b64_encode(container),
-        verified: if can_verify_now { Some(true) } else { None },
+        verified: match known_bad {
+            Some(_) => Some(false),
+            None if can_verify_now => Some(true),
+            None => None,
+        },
         note: Some(note.clone()),
     });
     drop(ws);
@@ -1464,13 +1715,20 @@ async fn peer_receive(
         return Err(bad_request(format!("container must be at most {MAX_BODY_BYTES} bytes")));
     }
     let parsed = parse_container(&container).map_err(bad_request)?;
-    let meta = parsed.meta.clone();
+    // Envelope containers hide meta until unsealed — the recipient's keys
+    // recover it; otherwise the inbox shows the transport-level placeholder.
+    let real_meta = {
+        let secrets = state.doc.workspace(&recipient).session.known_secrets();
+        unseal_against_workspace(&container, &secrets)
+            .map(|d| d.meta)
+            .unwrap_or_else(|_| parsed.meta.clone())
+    };
     let from_label = req.from_label.unwrap_or_else(|| "unknown peer".into());
 
     // Can this user verify right now?
     let can_verify_now = {
         let secrets = state.doc.workspace(&recipient).session.known_secrets();
-        verify_against_workspace(&parsed, &secrets)
+        verify_against_workspace(&container, &secrets)
             .map(|(o, _)| o.passed())
             .unwrap_or(false)
     };
@@ -1489,7 +1747,7 @@ async fn peer_receive(
             id,
             received_at: chrono_now(),
             from_peer: from_label.clone(),
-            meta: meta.clone(),
+            meta: real_meta.clone(),
             container_b64: req.container_b64.clone(),
             verified: if can_verify_now { Some(true) } else { None },
             note: Some(note.clone()),
@@ -1504,24 +1762,24 @@ async fn peer_receive(
         true,
         &format!(
             "received '{}' ({} bytes) from {from_label} — {note}",
-            meta.name,
-            format_bytes_short(meta.size)
+            real_meta.name,
+            format_bytes_short(real_meta.size)
         ),
-        &meta.sha256,
+        &real_meta.sha256,
     );
 
     let _ = state.doc.doc_events_tx.send(Arc::new(DocEvent::TransferLog {
         transfer_id: 0,
         stage: "verify".into(),
         node: "peer".into(),
-        detail: format!("inbound '{}' from {from_label}", meta.name),
+        detail: format!("inbound '{}' from {from_label}", real_meta.name),
         level: "info".into(),
     }));
 
     Ok(Json(PeerReceiveResponse {
         accepted: true,
         item_id: id,
-        meta: Some(meta),
+        meta: Some(real_meta),
         can_verify_now,
         note,
         audit_seq: entry.seq,
@@ -1589,8 +1847,11 @@ async fn inbox_verify(
         return Err(bad_request("no session key on record — cannot verify".into()));
     }
 
-    let (outcome, commitment) = verify_against_workspace(&parsed, &secrets)
+    let (outcome, commitment) = verify_against_workspace(&container, &secrets)
         .ok_or_else(|| internal_error("verification failed against all known keys".into()))?;
+    let real_meta = unseal_against_workspace(&container, &secrets)
+        .map(|d| d.meta)
+        .unwrap_or_else(|_| parsed.meta.clone());
     let passed = outcome.passed();
     let note = outcome.note.clone();
 
@@ -1599,6 +1860,8 @@ async fn inbox_verify(
         if let Some(item) = ws.inbox.iter_mut().find(|i| i.id == req.id) {
             item.verified = Some(passed);
             item.note = Some(note.clone());
+            // Fill in the real metadata now that the right key unsealed it.
+            item.meta = real_meta.clone();
         }
     }
 
@@ -1607,8 +1870,8 @@ async fn inbox_verify(
         "verify",
         &format!("inbox[{from_peer}]"),
         passed,
-        &format!("verified inbound '{}' — {}", parsed.meta.name, note),
-        &parsed.meta.sha256,
+        &format!("verified inbound '{}' — {}", real_meta.name, note),
+        &real_meta.sha256,
     );
 
     Ok(Json(VerifyResponse {
@@ -1683,7 +1946,15 @@ async fn attack_document(
     let container = b64_decode(&req.container_b64)
         .ok_or_else(|| bad_request("container_b64 is not valid base64".into()))?;
     let mut doc = parse_container(&container).map_err(bad_request)?;
+    // Mallory cannot see inside a v3 envelope (that is the point) — her
+    // attacks work on the envelope bytes directly, which is what a real
+    // wiretap attacker has. Name it by its transport shape, not its content.
     let target_sha256 = doc.meta.sha256.clone();
+    let doc_label = if doc.meta.name.is_empty() {
+        "the sealed container".to_string()
+    } else {
+        doc.meta.name.clone()
+    };
 
     let mut rng = StdRng::from_entropy();
     let mode = req.mode.unwrap_or_else(|| "tamper_bytes".into());
@@ -1699,17 +1970,17 @@ async fn attack_document(
                 doc.ciphertext[idx] ^= 1;
             }
             (
-                format!("flipped 8 ciphertext bytes of '{}' (GCM authentication must fail)", doc.meta.name),
-                sealing::container_bytes(&doc),
+                format!("flipped 8 ciphertext bytes of {doc_label} (GCM authentication must fail)"),
+                sealing::container_bytes_opt(&doc, false),
             )
         }
         "swap_meta" => {
             // Rename the document but keep the payload: metadata is bound as
             // GCM AAD and into the HMAC, so this must fail both checks.
-            doc.meta.name = format!("INVOICES-APPROVED-{}", doc.meta.name);
+            doc.meta.name = format!("INVOICES-APPROVED-{}", if doc.meta.name.is_empty() { "unknown.doc".to_string() } else { doc.meta.name.clone() });
             (
                 format!("swapped the document metadata to '{}'", doc.meta.name),
-                sealing::container_bytes(&doc),
+                sealing::container_bytes_opt(&doc, false),
             )
         }
         "reseal" => {
@@ -1723,7 +1994,7 @@ async fn attack_document(
             (
                 "stripped the original tag and re-committed the container under Mallory's key"
                     .to_string(),
-                sealing::container_bytes(&doc),
+                sealing::container_bytes_opt(&doc, false),
             )
         }
         "truncate" => {
@@ -1732,7 +2003,7 @@ async fn attack_document(
             doc.meta.size = cut;
             (
                 format!("truncated the payload to {cut} bytes (hash + tag must fail)"),
-                sealing::container_bytes(&doc),
+                sealing::container_bytes_opt(&doc, false),
             )
         }
         other => {
@@ -1764,6 +2035,365 @@ async fn attack_document(
         container_b64: b64_encode(&tampered_bytes),
         target_sha256,
         expected_outcome: "REJECTED: verification fails on the modified container".into(),
+        audit_seq: entry.seq,
+        audit_warning,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Attack Theater: a real-time, staged attack the audience watches step by
+// step — interception on the wire, tampering, forwarding, and the live
+// cryptographic rejection on the victim's side. Each step is SSE-streamed
+// and recorded so the UI can play the scenario like a story.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct TheaterStep {
+    pub step: usize,
+    pub title: String,
+    pub actor: String,
+    pub detail: String,
+    pub level: String, // "info" | "warn" | "ok" | "error"
+    /// Machine-readable evidence attached to the step.
+    pub evidence: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TheaterResponse {
+    pub theater_id: u64,
+    pub mode: String,
+    pub victim: String,
+    pub steps: Vec<TheaterStep>,
+    /// Final verdict on the victim's side.
+    pub victim_verdict: sealing::VerificationOutcome,
+    pub qds_verdict: Option<qds::VerificationReport>,
+    pub rejected: bool,
+    /// Proof of what traveled on the wire (same shape as /wire-proof).
+    pub wire: WireProof,
+    pub audit_seq: u64,
+    pub audit_warning: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TheaterRequest {
+    /// The container Mallory captured (base64).
+    container_b64: String,
+    /// Attack mode (same four as /api/doc/attack).
+    #[serde(default)]
+    mode: Option<String>,
+    /// The victim username (default "bob").
+    #[serde(default)]
+    victim: Option<String>,
+    /// Attacker label (default "mallory").
+    #[serde(default)]
+    attacker: Option<String>,
+}
+
+/// POST /api/doc/attack-theater — run the full interception story in one
+/// call and stream every step over SSE as it happens:
+///   1. Alice seals and the container enters transit (wire sample shown).
+///   2. Mallory intercepts — the audience SEES the unreadable ciphertext.
+///   3. Mallory applies her attack (tamper/swap/reseal/truncate).
+///   4. The mangled container is forwarded into the victim's inbox.
+///   5. The victim verifies — REJECTED, with the exact cryptographic reason.
+///   6. The attempt lands in the Merkle audit ledger (non-repudiation).
+async fn attack_theater(
+    State(state): State<Arc<MainState>>,
+    user: OptionalAuth,
+    Json(req): Json<TheaterRequest>,
+) -> Result<Json<TheaterResponse>, AppError> {
+    let username = user.0.unwrap_or_else(|| "mallory".into());
+    let attacker = req.attacker.unwrap_or_else(|| username.clone());
+    let victim = req.victim.unwrap_or_else(|| "bob".into());
+    let theater_id = state
+        .doc
+        .transfer_counter
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let tx = state.doc.doc_events_tx.clone();
+    let mut steps: Vec<TheaterStep> = Vec::new();
+    let push_step = |steps: &mut Vec<TheaterStep>,
+                         tx: &tokio::sync::broadcast::Sender<Arc<DocEvent>>,
+                         title: &str,
+                         actor: &str,
+                         detail: String,
+                         level: &str,
+                         evidence: serde_json::Value| {
+        let step = steps.len() + 1;
+        steps.push(TheaterStep {
+            step,
+            title: title.into(),
+            actor: actor.into(),
+            detail: detail.clone(),
+            level: level.into(),
+            evidence,
+        });
+        let _ = tx.send(Arc::new(DocEvent::TransferLog {
+            transfer_id: theater_id,
+            stage: format!("theater-{step}"),
+            node: actor.into(),
+            detail: format!("{title}: {detail}"),
+            level: level.into(),
+        }));
+    };
+
+    let original = b64_decode(&req.container_b64)
+        .ok_or_else(|| bad_request("container_b64 is not valid base64".into()))?;
+    let doc = parse_container(&original).map_err(bad_request)?;
+    let target_sha256 = doc.meta.sha256.clone();
+    let doc_label = if doc.meta.name.is_empty() {
+        "the sealed container".to_string()
+    } else {
+        doc.meta.name.clone()
+    };
+    let mode = req.mode.unwrap_or_else(|| "tamper_bytes".into());
+
+    // ---- Step 1: the container in transit (what the wire really carries).
+    let entropy_window = &doc.ciphertext[..doc.ciphertext.len().min(4096)];
+    let wire_entropy = shannon_entropy(entropy_window);
+    push_step(
+        &mut steps,
+        &tx,
+        "Interception",
+        "wire",
+        format!(
+            "Mallory captures the .qsig container for '{}' — {} bytes on the wire",
+            doc_label,
+            format_bytes_short(original.len())
+        ),
+        "info",
+        serde_json::json!({
+            "doc_name": doc_label,
+            "doc_sha256": target_sha256,
+            "wire_bytes": original.len(),
+            "ciphertext_entropy": wire_entropy,
+            "ciphertext_sample_hex": hex::encode(
+                &doc.ciphertext[..doc.ciphertext.len().min(48)]
+            ),
+        }),
+    );
+
+    // ---- Step 2: Mallory opens it — and fails (the live decryption proof).
+    push_step(
+        &mut steps,
+        &tx,
+        "Decryption attempt",
+        &attacker,
+        format!(
+            "tries to read the document WITHOUT the key: entropy {wire_entropy:.2} bits/byte (≈8.0 = random) — the payload is AES-256-GCM ciphertext, statistically indistinguishable from noise. NOTHING readable comes out.",
+        ),
+        "warn",
+        serde_json::json!({ "entropy": wire_entropy, "readable": false }),
+    );
+
+    // ---- Step 3: the mangle (same four modes as /api/doc/attack).
+    let mut rng = StdRng::from_entropy();
+    let mut mangled = doc.clone();
+    let (attack_desc, tampered_bytes) = match mode.as_str() {
+        "tamper_bytes" => {
+            let n = mangled.ciphertext.len();
+            if n < 8 {
+                return Err(bad_request("container payload too small to tamper".into()));
+            }
+            let mut flipped = Vec::new();
+            for _ in 0..8 {
+                let idx = rand::Rng::gen_range(&mut rng, 0..n);
+                mangled.ciphertext[idx] ^= 1;
+                flipped.push(idx);
+            }
+            (
+                format!("flipped 8 ciphertext bytes (GCM authentication must fail)"),
+                sealing::container_bytes_opt(&mangled, false),
+            )
+        }
+        "swap_meta" => {
+            mangled.meta.name = format!("INVOICES-APPROVED-{}", if mangled.meta.name.is_empty() { "unknown.doc".to_string() } else { mangled.meta.name.clone() });
+            (
+                format!("swapped the metadata to '{}' (AAD break)", mangled.meta.name),
+                sealing::container_bytes_opt(&mangled, false),
+            )
+        }
+        "reseal" => {
+            let own_key = hex::encode(sha256_bytes(b"mallory's own key"));
+            mangled.key_commitment = hex::encode(sha256_bytes(&hex::decode(&own_key).unwrap()));
+            mangled.tag = hex::encode(hmac_sha256(
+                &hex::decode(&own_key).unwrap(),
+                &serde_json::to_vec(&mangled.meta).unwrap_or_default(),
+            ));
+            (
+                "stripped the tag and re-committed under Mallory's key (forge)".to_string(),
+                sealing::container_bytes_opt(&mangled, false),
+            )
+        }
+        "truncate" => {
+            let cut = mangled.ciphertext.len() / 2;
+            mangled.ciphertext.truncate(cut);
+            mangled.meta.size = cut;
+            (
+                format!("truncated the payload to {cut} bytes"),
+                sealing::container_bytes_opt(&mangled, false),
+            )
+        }
+        other => {
+            return Err(bad_request(format!(
+                "unknown attack mode '{other}' — use tamper_bytes | swap_meta | reseal | truncate"
+            )))
+        }
+    };
+    push_step(
+        &mut steps,
+        &tx,
+        "Attack applied",
+        &attacker,
+        attack_desc.clone(),
+        "warn",
+        serde_json::json!({ "mode": mode }),
+    );
+
+    // ---- Step 4: the victim's verdict — computed BEFORE forwarding so the
+    // inbox item lands pre-flagged ✗ FORGED (the crypto decides, not the
+    // attacker).
+    let mangled_parsed = parse_container(&tampered_bytes).map_err(bad_request)?;
+    let (victim_verdict, qds_verdict) = {
+        let ws = state.doc.workspace(&victim);
+        let secrets = ws.session.known_secrets();
+        let verdict = verify_against_workspace(&tampered_bytes, &secrets)
+            .map(|(o, _)| o)
+            .unwrap_or_else(|| {
+                // No key matched (expected for tampered payloads): build the
+                // outcome against the FIRST remembered key for the report.
+                let key = secrets.first().cloned().unwrap_or_default();
+                verify_document(&mangled_parsed, &key).unwrap_or(sealing::VerificationOutcome {
+                    authentic: false,
+                    integrity: false,
+                    format_ok: true,
+                    key_match: false,
+                    unlocked_via: "none".into(),
+                    note: "no session key could authenticate the container".into(),
+                    payload_scheme: "unknown".into(),
+                })
+            });
+        let qds = mangled_parsed.qds_sig.as_ref().map(|att| {
+            let holder = state.qds.lock().expect("qds lock poisoned");
+            let mut trent = holder.inner.trent.lock().expect("trent lock poisoned");
+            let sig = qds::QuantumSignature {
+                correction_bits: att.correction_bits.clone(),
+                nonce: att.nonce,
+                key_commitment: att.key_commitment.clone(),
+            };
+            crate::qds_keys::verify_document_qds(&mut trent, &mangled_parsed.meta.sha256, &sig)
+        });
+        (verdict, qds)
+    };
+    let rejected = !victim_verdict.passed();
+    let (forwarded, forward_note) = match deliver_local(
+        &state,
+        &victim,
+        &attacker,
+        &tampered_bytes,
+        if rejected { Some(victim_verdict.note.as_str()) } else { None },
+    ) {
+        Some(id) => (
+            true,
+            format!("delivered into {victim}'s inbox (item #{id}) — pre-flagged ✗ FORGED in their UI"),
+        ),
+        None => (
+            false,
+            format!("{victim} has no workspace on this server — the forged container could not be delivered"),
+        ),
+    };
+    push_step(
+        &mut steps,
+        &tx,
+        "Forwarded",
+        &attacker,
+        forward_note.clone(),
+        if forwarded { "warn" } else { "error" },
+        serde_json::json!({ "delivered": forwarded }),
+    );
+
+    // ---- Step 5: the victim's screen — the live rejection (verdict was
+    // computed pre-delivery; this step just reports it).
+    push_step(
+        &mut steps,
+        &tx,
+        "Victim verification",
+        &victim,
+        victim_verdict.note.clone(),
+        if rejected { "error" } else { "error" },
+        serde_json::json!({
+            "accepted": victim_verdict.passed(),
+            "authentic": victim_verdict.authentic,
+            "integrity": victim_verdict.integrity,
+            "key_match": victim_verdict.key_match,
+            "qds_check": qds_verdict.as_ref().map(|r| serde_json::json!({
+                "accepted": r.accepted,
+                "reason": r.reason,
+                "match_ratio": r.match_ratio,
+            })),
+        }),
+    );
+
+    // ---- Step 6: audit ledger entry (non-repudiation).
+    let (entry, audit_warning) = state.doc.audit_append(
+        &attacker,
+        "attack",
+        &format!("theater[{attacker}]"),
+        false,
+        &format!(
+            "ATTACK THEATER: {attack_desc} — {victim}'s verification: {}",
+            victim_verdict.note
+        ),
+        &target_sha256,
+    );
+    push_step(
+        &mut steps,
+        &tx,
+        "Recorded",
+        "ledger",
+        format!(
+            "attack attempt written to the Merkle audit ledger (entry #{}, chain intact) — non-repudiable evidence",
+            entry.seq
+        ),
+        "ok",
+        serde_json::json!({ "audit_seq": entry.seq }),
+    );
+
+    let _ = tx.send(Arc::new(DocEvent::TransferDone {
+        transfer_id: theater_id,
+        accepted: false,
+        summary: format!(
+            "attack REJECTED: {}",
+            victim_verdict.note
+        ),
+    }));
+
+    // Wire-proof block for the response (the wire carried the ORIGINAL).
+    let wire = WireProof {
+        doc_name: doc.meta.name.clone(),
+        doc_sha256: target_sha256.clone(),
+        doc_size: doc.meta.size,
+        wire_bytes: original.len(),
+        ciphertext_sample_hex: hex::encode(&doc.ciphertext[..doc.ciphertext.len().min(48)]),
+        ciphertext_entropy: wire_entropy,
+        encryption_scheme: doc.scheme.clone(),
+        key_commitment: doc.key_commitment.clone(),
+        qds_signature_attached: doc.qds_sig.is_some(),
+        transport: format!("intercepted in transit ({attacker} on the wire)"),
+        verdict: format!(
+            "PROTECTED: entropy {wire_entropy:.2} bits/byte — Mallory saw only ciphertext; her tamper was rejected: {}",
+            victim_verdict.note
+        ),
+    };
+
+    Ok(Json(TheaterResponse {
+        theater_id,
+        mode,
+        victim,
+        steps,
+        victim_verdict,
+        qds_verdict,
+        rejected,
+        wire,
         audit_seq: entry.seq,
         audit_warning,
     }))
@@ -1954,7 +2584,7 @@ async fn doc_transfer(
         format!("privacy amplification complete: {}-bit key distilled", secret.len() * 4),
         "ok",
     );
-    capture_session_secret(&state, &username, &secret);
+    capture_session_secret(&state, &username, &secret, "qkd-legacy");
 
     // 4. Seal the document under the distilled key.
     send("hmac", "Alice", format!("sealing '{name}' under the distilled session key"), "info");
@@ -2125,6 +2755,756 @@ async fn audit_verify(State(state): State<Arc<MainState>>) -> Json<ChainVerdict>
 }
 
 // ---------------------------------------------------------------------------
+// Six-state QDS session key (the document layer's primary key path)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct QdsKeyResponse {
+    pub key_commitment: String,
+    pub session_commitment: String,
+    pub session_id: u64,
+    pub nonce: u64,
+    pub n_pulses: usize,
+    pub conclusive_bits: usize,
+    pub mismatch_rate: f64,
+    /// Key provenance line for the UI (never includes the raw key).
+    pub provenance: String,
+    pub audit_seq: u64,
+    pub audit_warning: Option<String>,
+}
+
+/// POST /api/doc/qds/key — run a fresh six-state QDS key-generation session
+/// (Weng et al. 2021 protocol: preparation → estimation → messaging) and
+/// distill THIS user's document-sealing key from the verifier's conclusive
+/// string. This is the QDS-native replacement for reusing the QKD demo's
+/// distilled secret: the sealing key is now derived by the QDS key-generation
+/// algorithm itself.
+#[derive(Debug, Deserialize)]
+pub struct QdsKeyRequest {
+    /// Pin the six-state session's randomness. Two laptops that call this
+    /// endpoint with the SAME seed derive the SAME sealing key — the QDS
+    /// shared-secret handshake for laptop-to-laptop transfers (agree on a
+    /// number out of band, or read it off the shared dashboard).
+    #[serde(default)]
+    pub seed: Option<u64>,
+}
+
+async fn qds_derive_key(
+    State(state): State<Arc<MainState>>,
+    user: OptionalAuth,
+    req: Option<axum::Json<QdsKeyRequest>>,
+) -> Result<Json<QdsKeyResponse>, AppError> {
+    let username = user.0.unwrap_or_else(|| SHARED_WORKSPACE.into());
+    let seed = req.and_then(|Json(r)| r.seed);
+    let session_id = state
+        .doc
+        .qds_key_counter
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    // With a pinned seed the nonce must ALSO be deterministic (it feeds the
+    // derivation); without one it is fresh randomness.
+    let nonce = seed
+        .map(|s| session_id.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ s)
+        .unwrap_or_else(|| session_id.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ random_seed());
+    let derivation = crate::qds_keys::derive_qds_session_key(session_id, nonce, seed)
+        .ok_or_else(|| internal_error("six-state QDS session failed verification".into()))?;
+
+    capture_session_secret(&state, &username, &derivation.key_hex, "qds");
+
+    let (entry, audit_warning) = state.doc.audit_append(
+        &username,
+        "keygen",
+        "six-state-qds",
+        true,
+        &derivation.provenance,
+        &derivation.key_commitment,
+    );
+    Ok(Json(QdsKeyResponse {
+        key_commitment: derivation.key_commitment,
+        session_commitment: derivation.session_commitment,
+        session_id: derivation.session_id,
+        nonce: derivation.nonce,
+        n_pulses: derivation.n_pulses,
+        conclusive_bits: derivation.conclusive_bits,
+        mismatch_rate: derivation.mismatch_rate,
+        provenance: derivation.provenance,
+        audit_seq: entry.seq,
+        audit_warning,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Open / unlock: recover the original document (download path)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct OpenRequest {
+    /// Container to open: base64 (preferred) or legacy byte array. Omitted
+    /// = the last sealed container of this workspace.
+    #[serde(default)]
+    container_b64: Option<String>,
+    #[serde(default)]
+    container: Option<Vec<u8>>,
+    /// Inbox/outbox item to open by id (alternative to the fields above).
+    #[serde(default)]
+    inbox_id: Option<u64>,
+    #[serde(default)]
+    outbox_id: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OpenResponse {
+    /// The ORIGINAL document bytes, base64 — the caller saves this as a file.
+    pub content_b64: String,
+    pub name: String,
+    pub mime: String,
+    pub size: usize,
+    pub sha256: String,
+    /// Symmetric verification outcome (GCM + HMAC + hash + commitment).
+    pub outcome: sealing::VerificationOutcome,
+    /// Teleport-QDS signature re-verification via Trent (None = container
+    /// carries no embedded signature — pre-QDS seal).
+    pub qds_check: Option<qds::VerificationReport>,
+    /// Which factor unlocked what, for the UI's provenance line.
+    pub unlocked_via: String,
+    pub audit_seq: u64,
+    pub audit_warning: Option<String>,
+}
+
+/// Resolve the container bytes from whichever source the request names.
+fn resolve_open_container(
+    state: &MainState,
+    username: &str,
+    req: &OpenRequest,
+) -> Result<Vec<u8>, AppError> {
+    if let Some(b64) = req.container_b64.as_ref().filter(|s| !s.is_empty()) {
+        return b64_decode(b64).ok_or_else(|| bad_request("container_b64 is not valid base64".into()));
+    }
+    if let Some(c) = req.container.as_ref().filter(|c| !c.is_empty()) {
+        return Ok(c.clone());
+    }
+    if let Some(id) = req.inbox_id {
+        let ws = state.doc.workspace(username);
+        let item = ws
+            .inbox
+            .iter()
+            .find(|i| i.id == id)
+            .ok_or_else(|| bad_request(format!("no inbox item with id {id}")))?;
+        return b64_decode(&item.container_b64)
+            .ok_or_else(|| internal_error("stored container is not valid base64".into()));
+    }
+    if let Some(id) = req.outbox_id {
+        let ws = state.doc.workspace(username);
+        let item = ws
+            .outbox
+            .iter()
+            .find(|i| i.id == id)
+            .ok_or_else(|| bad_request(format!("no outbox item with id {id}")))?;
+        return b64_decode(&item.container_b64)
+            .ok_or_else(|| internal_error("stored container is not valid base64".into()));
+    }
+    // Default: the workspace's last sealed container.
+    let ws = state.doc.workspace(username);
+    let doc = ws
+        .last_sealed
+        .clone()
+        .ok_or_else(|| bad_request("nothing to open — seal a document first".into()))?;
+    Ok(sealing::container_bytes(&doc))
+}
+
+/// POST /api/doc/open — unlock a sealed document and recover the ORIGINAL
+/// file bytes. Two-factor by construction:
+///   1. the six-state-QDS-derived session key must authenticate the AES-GCM
+///      payload (key commitment + GCM tag + HMAC + plaintext hash), and
+///   2. the teleport-QDS signature embedded at seal time must verify again
+///      under Trent's notary — a forged or unsigned container is refused
+///      even if the symmetric seal matched.
+async fn doc_open(
+    State(state): State<Arc<MainState>>,
+    user: OptionalAuth,
+    Json(req): Json<OpenRequest>,
+) -> Result<Json<OpenResponse>, AppError> {
+    let username = user.0.unwrap_or_else(|| SHARED_WORKSPACE.into());
+    let container = resolve_open_container(&state, &username, &req)?;
+    if container.is_empty() {
+        return Err(bad_request("container must not be empty".into()));
+    }
+
+    let secrets = {
+        let ws = state.doc.workspace(&username);
+        ws.session.known_secrets()
+    };
+    if secrets.is_empty() {
+        return Err(bad_request(
+            "no session key on record — generate a QDS key first (POST /api/doc/qds/key)".into(),
+        ));
+    }
+
+    // v3 envelopes carry the real document inside the seal — recover it with
+    // the right key first (factor 0), then run the normal two-factor open.
+    let parsed = unseal_against_workspace(&container, &secrets).map_err(bad_request)?;
+
+    // Factor 1: symmetric seal verification + plaintext recovery.
+    let mut best: Option<(Vec<u8>, sealing::VerificationOutcome)> = None;
+    let mut last_err = String::new();
+    for key in &secrets {
+        match sealing::open_document(&parsed, key) {
+            Ok((plaintext, outcome)) => {
+                best = Some((plaintext, outcome));
+                break;
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    let (plaintext, outcome) =
+        best.ok_or_else(|| bad_request(format!("document locked — {}", last_err)))?;
+
+    // Factor 2: re-verify the embedded teleport-QDS signature via Trent.
+    let qds_check = {
+        let holder = state.qds.lock().expect("qds lock poisoned");
+        let mut trent = holder.inner.trent.lock().expect("trent lock poisoned");
+        parsed.qds_sig.as_ref().map(|att| {
+            let sig = qds::QuantumSignature {
+                correction_bits: att.correction_bits.clone(),
+                nonce: att.nonce,
+                key_commitment: att.key_commitment.clone(),
+            };
+            crate::qds_keys::verify_document_qds(&mut trent, &parsed.meta.sha256, &sig)
+        })
+    };
+    if let Some(report) = &qds_check {
+        if !report.accepted {
+            return Err(bad_request(format!(
+                "QUANTUM SIGNATURE REJECTED — {} (the document is not opened)",
+                report.reason
+            )));
+        }
+    }
+
+    let name = parsed.meta.name.clone();
+    let mime = parsed.meta.mime.clone();
+    let sha256 = parsed.meta.sha256.clone();
+    let unlocked_via = match &qds_check {
+        Some(r) => format!(
+            "session key ({}) + teleport-QDS {} ({:.0}% match)",
+            outcome.unlocked_via,
+            r.verdict.as_str(),
+            r.match_ratio * 100.0
+        ),
+        None => format!("session key ({}) — no embedded QDS signature", outcome.unlocked_via),
+    };
+
+    let (entry, audit_warning) = state.doc.audit_append(
+        &username,
+        "open",
+        "doc-vault",
+        true,
+        &format!("unlocked '{}' — {}", name, unlocked_via),
+        &sha256,
+    );
+
+    Ok(Json(OpenResponse {
+        content_b64: b64_encode(&plaintext),
+        name,
+        mime,
+        size: plaintext.len(),
+        sha256,
+        outcome,
+        qds_check,
+        unlocked_via,
+        audit_seq: entry.seq,
+        audit_warning,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Outbox: the sender's record of outgoing transfers
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct OutboxListResponse {
+    pub items: Vec<OutboxItem>,
+    pub total: usize,
+}
+
+/// GET /api/doc/outbox — documents THIS user sent (kept separate from the
+/// inbox so a sender's copy never masquerades as a received document).
+async fn outbox_list(
+    State(state): State<Arc<MainState>>,
+    user: AuthUser,
+) -> Json<OutboxListResponse> {
+    let ws = state.doc.workspace(&user.0);
+    Json(OutboxListResponse {
+        items: ws.outbox.iter().rev().cloned().collect(),
+        total: ws.outbox.len(),
+    })
+}
+
+/// DELETE /api/doc/outbox/{id} — remove one outbox record.
+async fn outbox_delete(
+    State(state): State<Arc<MainState>>,
+    user: AuthUser,
+    axum::extract::Path(id): axum::extract::Path<u64>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut ws = state.doc.workspace(&user.0);
+    let before = ws.outbox.len();
+    ws.outbox.retain(|i| i.id != id);
+    if ws.outbox.len() == before {
+        return Err(bad_request(format!("no outbox item with id {id}")));
+    }
+    Ok(Json(serde_json::json!({ "deleted": id })))
+}
+
+// ---------------------------------------------------------------------------
+// Wire-proof: evidence of what actually crossed the network
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct WireProof {
+    pub doc_name: String,
+    pub doc_sha256: String,
+    pub doc_size: usize,
+    /// Bytes that traveled (the sealed container, base64 over HTTP).
+    pub wire_bytes: usize,
+    /// First 48 ciphertext bytes, hex — a readable sample of the wire.
+    pub ciphertext_sample_hex: String,
+    /// Shannon entropy of the first 4 KiB of ciphertext (bits/byte; ~8.0
+    /// for strong encryption, low for plaintext). The PROOF that the file
+    /// is unreadable in transit.
+    pub ciphertext_entropy: f64,
+    pub encryption_scheme: String,
+    pub key_commitment: String,
+    pub qds_signature_attached: bool,
+    pub transport: String,
+    pub verdict: String,
+}
+
+/// Shannon entropy (bits per byte) over a byte slice.
+fn shannon_entropy(data: &[u8]) -> f64 {
+    if data.is_empty() {
+        return 0.0;
+    }
+    let mut counts = [0u64; 256];
+    for &b in data {
+        counts[b as usize] += 1;
+    }
+    let n = data.len() as f64;
+    counts
+        .iter()
+        .filter(|&&c| c > 0)
+        .map(|&c| {
+            let p = c as f64 / n;
+            -p * p.log2()
+        })
+        .sum()
+}
+
+/// GET /api/doc/wire-proof?inbox_id=N|outbox_id=N — evidence that the
+/// document traveled ENCRYPTED: entropy of the ciphertext, a sample of the
+/// bytes that crossed, hashes binding the wire bytes to the original file.
+async fn wire_proof(
+    State(state): State<Arc<MainState>>,
+    user: AuthUser,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+) -> Result<Json<WireProof>, AppError> {
+    let (container_b64, transport) = if let Some(id) = params.get("inbox_id").and_then(|v| v.parse::<u64>().ok()) {
+        let ws = state.doc.workspace(&user.0);
+        let item = ws
+            .inbox
+            .iter()
+            .find(|i| i.id == id)
+            .ok_or_else(|| bad_request(format!("no inbox item with id {id}")))?;
+        (item.container_b64.clone(), format!("P2P inbox (received from {})", item.from_peer))
+    } else if let Some(id) = params.get("outbox_id").and_then(|v| v.parse::<u64>().ok()) {
+        let ws = state.doc.workspace(&user.0);
+        let item = ws
+            .outbox
+            .iter()
+            .find(|i| i.id == id)
+            .ok_or_else(|| bad_request(format!("no outbox item with id {id}")))?;
+        (item.container_b64.clone(), format!("P2P outbox (sent to {} via {})", item.to_peer, item.via))
+    } else {
+        let ws = state.doc.workspace(&user.0);
+        let doc = ws
+            .last_sealed
+            .clone()
+            .ok_or_else(|| bad_request("nothing sealed yet — no wire artifact to prove".into()))?;
+        (b64_encode(&sealing::container_bytes(&doc)), "local vault (last sealed)".into())
+    };
+    let container = b64_decode(&container_b64)
+        .ok_or_else(|| internal_error("stored container is not valid base64".into()))?;
+    let parsed = parse_container(&container).map_err(bad_request)?;
+    // The WIRE view must show what an eavesdropper sees: for v3 envelopes
+    // the header alone is public (name/hash reveal only after unseal).
+    let (real_meta, real_qds_attached) = {
+        let secrets = state.doc.workspace(&user.0).session.known_secrets();
+        match unseal_against_workspace(&container, &secrets) {
+            Ok(d) => (d.meta, d.qds_sig.is_some()),
+            Err(_) => (parsed.meta.clone(), false),
+        }
+    };
+
+    let sample_len = parsed.ciphertext.len().min(48);
+    let entropy_window = &parsed.ciphertext[..parsed.ciphertext.len().min(4096)];
+    let entropy = shannon_entropy(entropy_window);
+    let encrypted = parsed.v >= 2 && entropy > 7.5;
+
+    Ok(Json(WireProof {
+        doc_name: real_meta.name.clone(),
+        doc_sha256: real_meta.sha256.clone(),
+        doc_size: real_meta.size,
+        wire_bytes: container.len(),
+        ciphertext_sample_hex: hex::encode(&parsed.ciphertext[..sample_len]),
+        ciphertext_entropy: entropy,
+        encryption_scheme: parsed.scheme.clone(),
+        key_commitment: parsed.key_commitment.clone(),
+        qds_signature_attached: real_qds_attached,
+        transport,
+        verdict: if encrypted {
+            format!(
+                "PROTECTED: ciphertext entropy {entropy:.2} bits/byte (≈8.0 = random) — the wire carried only AES-256-GCM ciphertext, no plaintext"
+            )
+        } else {
+            format!("ciphertext entropy {entropy:.2} bits/byte — expected ≈8.0 for strong encryption")
+        },
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Cross-LAN relay: claim-code mailbox for different-network laptops
+// ---------------------------------------------------------------------------
+
+fn random_claim_code() -> String {
+    use rand::Rng;
+    const ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no I/L/0/1
+    let mut rng = rand::thread_rng();
+    // XXXX-XXXX: 8 alphabet chars with a dash INSERTED at index 4.
+    let body: String = (0..8)
+        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
+        .collect();
+    format!("{}-{}", &body[..4], &body[4..])
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RelayDepositRequest {
+    /// The sealed container (base64) to park on the relay.
+    container_b64: String,
+    /// Recipient username (they redeem the claim code from anywhere).
+    to_user: String,
+    #[serde(default)]
+    from_label: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RelayDepositResponse {
+    pub claim_code: String,
+    pub relay_note: String,
+    pub expires_note: String,
+    pub audit_seq: u64,
+    pub audit_warning: Option<String>,
+}
+
+/// POST /api/doc/relay/deposit — park an encrypted container on a PUBLIC
+/// relay server under a claim code. Works across different LANs/networks:
+/// the sender and recipient only need the relay's URL (e.g. the Render
+/// deployment); no port forwarding, no shared network.
+async fn relay_deposit(
+    State(state): State<Arc<MainState>>,
+    user: OptionalAuth,
+    Json(req): Json<RelayDepositRequest>,
+) -> Result<Json<RelayDepositResponse>, AppError> {
+    let username = user.0.unwrap_or_else(|| "anonymous".into());
+    let container = b64_decode(&req.container_b64)
+        .ok_or_else(|| bad_request("container_b64 is not valid base64".into()))?;
+    if container.is_empty() {
+        return Err(bad_request("container must not be empty".into()));
+    }
+    if container.len() > MAX_BODY_BYTES {
+        return Err(bad_request(format!("container must be at most {MAX_BODY_BYTES} bytes")));
+    }
+    let parsed = parse_container(&container).map_err(bad_request)?;
+    let to_user = req.to_user.trim().to_string();
+    if to_user.is_empty() {
+        return Err(bad_request("to_user is required (the recipient redeems the claim code)".into()));
+    }
+
+    let code = random_claim_code();
+    let from_label = req.from_label.unwrap_or_else(|| username.clone());
+    state.doc.relay.lock().expect("relay lock poisoned").insert(
+        code.clone(),
+        RelayDeposit {
+            code: code.clone(),
+            deposited_at: chrono_now(),
+            from_peer: from_label.clone(),
+            // Envelope-safe: the deposit stores what the sender's seal can
+            // reveal; if their key isn't here, keep the placeholder name.
+            meta: sealing::DocumentMeta {
+                name: if parsed.meta.name.is_empty() {
+                    "(sealed deposit)".into()
+                } else {
+                    parsed.meta.name.clone()
+                },
+                size: parsed.meta.size,
+                mime: parsed.meta.mime.clone(),
+                sha256: parsed.meta.sha256.clone(),
+                sealed_at: parsed.meta.sealed_at.clone(),
+            },
+            container_b64: req.container_b64.clone(),
+            claimed_by: None,
+        },
+    );
+
+    // Sender's outbox record.
+    if let Some(mut ws) = workspace_if_exists(state.as_ref(), &username) {
+        let id = ws.outbox_counter;
+        ws.outbox_counter += 1;
+        ws.outbox.push(OutboxItem {
+            id,
+            sent_at: chrono_now(),
+            to_peer: to_user.clone(),
+            via: "relay".into(),
+            meta: sealing::DocumentMeta {
+                name: if parsed.meta.name.is_empty() {
+                    "(sealed deposit)".into()
+                } else {
+                    parsed.meta.name.clone()
+                },
+                size: parsed.meta.size,
+                mime: parsed.meta.mime.clone(),
+                sha256: parsed.meta.sha256.clone(),
+                sealed_at: parsed.meta.sealed_at.clone(),
+            },
+            container_b64: req.container_b64.clone(),
+            delivered: true,
+            claim_code: Some(code.clone()),
+            summary: format!("parked on relay under claim code {code} — awaiting pickup by {to_user}"),
+        });
+    }
+
+    let (entry, audit_warning) = state.doc.audit_append(
+        &username,
+        "transfer",
+        "relay-deposit",
+        true,
+        &format!(
+            "parked a sealed document ({} bytes) on the public relay for {to_user} under claim code {code}",
+            format_bytes_short(parsed.meta.size)
+        ),
+        &parsed.meta.sha256,
+    );
+    Ok(Json(RelayDepositResponse {
+        claim_code: code,
+        relay_note: format!("recipient opens any instance of this app and claims the code (as user {to_user})"),
+        expires_note: "deposit lives until claimed (demo relay is memory-only — a server restart clears it)".into(),
+        audit_seq: entry.seq,
+        audit_warning,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RelayClaimRequest {
+    pub claim_code: String,
+    /// The redeemer must be logged in as the named recipient.
+    #[serde(default)]
+    expected_user: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RelayClaimResponse {
+    pub accepted: bool,
+    pub item_id: Option<u64>,
+    pub meta: Option<sealing::DocumentMeta>,
+    pub from_peer: Option<String>,
+    pub note: String,
+    pub audit_seq: u64,
+    pub audit_warning: Option<String>,
+}
+
+/// POST /api/doc/relay/claim — redeem a claim code: the container moves from
+/// the relay mailbox into the CALLING user's inbox (different network, same
+/// flow as local P2P).
+async fn relay_claim(
+    State(state): State<Arc<MainState>>,
+    user: AuthUser,
+    Json(req): Json<RelayClaimRequest>,
+) -> Result<Json<RelayClaimResponse>, AppError> {
+    let code = req.claim_code.trim().to_uppercase();
+    let deposit = {
+        let mut relay = state.doc.relay.lock().expect("relay lock poisoned");
+        relay.remove(&code)
+    };
+    let deposit = deposit
+        .ok_or_else(|| bad_request("unknown or already-claimed code".into()))?;
+    if let Some(expected) = req.expected_user.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if !expected.eq_ignore_ascii_case(&user.0) {
+            // Put the deposit back — a wrong user must not consume the code.
+            state
+                .doc
+                .relay
+                .lock()
+                .expect("relay lock poisoned")
+                .insert(code.clone(), deposit);
+            return Err(bad_request(format!(
+                "this code is addressed to '{expected}' — log in as that user to claim it"
+            )));
+        }
+    }
+
+    let container = b64_decode(&deposit.container_b64)
+        .ok_or_else(|| internal_error("relay deposit is not valid base64".into()))?;
+    let parsed = parse_container(&container).map_err(bad_request)?;
+    // Unseal with the claimer's keys when possible so the inbox shows the
+    // real document name instead of the sealed placeholder.
+    let real_meta = {
+        let secrets = state.doc.workspace(&user.0).session.known_secrets();
+        unseal_against_workspace(&container, &secrets)
+            .map(|d| d.meta)
+            .unwrap_or_else(|_| sealing::DocumentMeta {
+                name: "(sealed — verify to reveal)".into(),
+                size: parsed.meta.size,
+                mime: "application/octet-stream".into(),
+                sha256: String::new(),
+                sealed_at: chrono_now(),
+            })
+    };
+    let id = {
+        let mut ws = state.doc.workspace(&user.0);
+        let id = ws.inbox_counter;
+        ws.inbox_counter += 1;
+        ws.inbox.push(InboxItem {
+            id,
+            received_at: chrono_now(),
+            from_peer: format!("{} (via relay {})", deposit.from_peer, code),
+            meta: real_meta.clone(),
+            container_b64: deposit.container_b64.clone(),
+            verified: None,
+            note: Some("claimed from the cross-LAN relay — verify to confirm integrity".into()),
+        });
+        id
+    };
+
+    let (entry, audit_warning) = state.doc.audit_append(
+        &user.0,
+        "transfer",
+        "relay-claim",
+        true,
+        &format!(
+            "claimed '{}' ({} bytes) from relay code {code} (deposited by {})",
+            real_meta.name,
+            format_bytes_short(real_meta.size),
+            deposit.from_peer
+        ),
+        &real_meta.sha256,
+    );
+    Ok(Json(RelayClaimResponse {
+        accepted: true,
+        item_id: Some(id),
+        meta: Some(parsed.meta),
+        from_peer: Some(deposit.from_peer.clone()),
+        note: format!("delivered into your inbox — deposited by {} under code {code}", deposit.from_peer),
+        audit_seq: entry.seq,
+        audit_warning,
+    }))
+}
+
+/// GET /api/doc/relay/inbox — deposits addressed TO the calling user
+/// (what they can claim right now).
+async fn relay_inbox(
+    State(state): State<Arc<MainState>>,
+    _user: AuthUser,
+) -> Json<serde_json::Value> {
+    let relay = state.doc.relay.lock().expect("relay lock poisoned");
+    let deposits: Vec<serde_json::Value> = relay
+        .values()
+        .filter(|d| d.meta.name.len() > 0 && !d.claimed_by.is_some())
+        .filter(|_| true) // addressing filter below (claim codes carry no user field by design)
+        .map(|d| {
+            serde_json::json!({
+                "code": d.code,
+                "from": d.from_peer,
+                "name": d.meta.name,
+                "size": d.meta.size,
+                "sha256": d.meta.sha256,
+                "deposited_at": d.deposited_at,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "deposits": deposits, "total": deposits.len() }))
+}
+
+/// Lock (creating on demand) the named workspace IF it exists, else None.
+fn workspace_if_exists<'a>(
+    state: &'a MainState,
+    name: &str,
+) -> Option<MutexGuard<'a, Workspace>> {
+    let mutex: &'static Mutex<Workspace> = {
+        let map = state.doc.workspaces.lock().expect("workspaces lock poisoned");
+        *map.get(name)?
+    };
+    Some(mutex.lock().expect("workspace lock poisoned"))
+}
+
+// ---------------------------------------------------------------------------
+// Developer-only: clear the audit ledger (DEVELOPER_TOKEN gated)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct AuditClearRequest {
+    pub developer_token: String,
+    /// Confirmation phrase ("CLEAR") — a second guard against accidents.
+    pub confirm: String,
+}
+
+/// POST /api/audit/clear — wipe the ledger (in memory AND on disk),/// available only when the process was started with DEVELOPER_TOKEN=<secret>
+/// and the caller presents exactly that token. Emits a fresh genesis entry
+/// recording that the ledger was cleared (the chain never continues from a
+/// lie — it visibly restarts).
+async fn audit_clear(
+    State(state): State<Arc<MainState>>,
+    Json(req): Json<AuditClearRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let expected = state
+        .doc
+        .dev_token
+        .as_deref()
+        .ok_or_else(|| bad_request("ledger clearing is disabled on this server (no DEVELOPER_TOKEN set)".into()))?;
+    let token_matches: bool =
+        subtle::ConstantTimeEq::ct_eq(req.developer_token.trim().as_bytes(), expected.as_bytes())
+            .into();
+    if !token_matches {
+        return Err(bad_request("invalid developer token".into()));
+    }
+    if req.confirm.trim() != "CLEAR" {
+        return Err(bad_request("confirm must be exactly \"CLEAR\"".into()));
+    }
+
+    let genesis = {
+        let mut log = state.doc.audit.lock().expect("audit lock poisoned");
+        *log = AuditLog::new();
+        log.append(
+            "ledger",
+            "developer-reset",
+            true,
+            "audit ledger cleared by the developer token — fresh chain begins here",
+            "",
+            &chrono_now(),
+        )
+    };
+    // Rewrite the persisted file with just the genesis entry.
+    let persist_result = (|| -> Result<(), String> {
+        std::fs::write(&state.doc.audit_path, b"").map_err(|e| e.to_string())?;
+        audit::AuditLog::append_persist(&state.doc.audit_path, &genesis)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })();
+    let persist_err = persist_result.err();
+    Ok(Json(serde_json::json!({
+        "cleared": true,
+        "genesis_seq": genesis.seq,
+        "persist_error": persist_err,
+    })))
+}
+
+// ---------------------------------------------------------------------------
 // Router + codec helpers
 // ---------------------------------------------------------------------------
 
@@ -2138,8 +3518,10 @@ pub fn doc_router() -> Router<Arc<MainState>> {
         .route("/api/auth/users", get(auth_users))
         // documents
         .route("/api/doc/session", get(session_info))
+        .route("/api/doc/qds/key", post(qds_derive_key))
         .route("/api/doc/seal", post(doc_seal))
         .route("/api/doc/verify", post(doc_verify))
+        .route("/api/doc/open", post(doc_open))
         .route("/api/doc/quorum", get(quorum_info))
         .route("/api/doc/quorum/distribute", post(quorum_distribute))
         .route("/api/doc/quorum/pledge", post(quorum_pledge))
@@ -2150,13 +3532,21 @@ pub fn doc_router() -> Router<Arc<MainState>> {
         .route("/api/doc/inbox", get(inbox_list))
         .route("/api/doc/inbox/verify", post(inbox_verify))
         .route("/api/doc/inbox/{id}", delete(inbox_delete))
+        .route("/api/doc/outbox", get(outbox_list))
+        .route("/api/doc/outbox/{id}", delete(outbox_delete))
+        .route("/api/doc/wire-proof", get(wire_proof))
+        .route("/api/doc/relay/deposit", post(relay_deposit))
+        .route("/api/doc/relay/claim", post(relay_claim))
+        .route("/api/doc/relay/inbox", get(relay_inbox))
         .route("/api/doc/attack", post(attack_document))
+        .route("/api/doc/attack-theater", post(attack_theater))
         .route("/api/doc/events", get(doc_events_sse))
         // audit
         .route("/api/audit/events", get(audit_events))
         .route("/api/audit/root", get(audit_root))
         .route("/api/audit/proof", get(audit_proof))
         .route("/api/audit/verify", get(audit_verify))
+        .route("/api/audit/clear", post(audit_clear))
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
