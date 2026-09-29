@@ -15,12 +15,13 @@ services:
   - type: web
     name: sih26141-quantum-pipeline
     runtime: docker
-    # This blueprint lives inside the sih26141/ subfolder, but Render
-    # resolves Docker paths relative to the REPO ROOT — both keys below
-    # are required or the build fails with "open Dockerfile: no such file
-    # or directory".
-    dockerfilePath: ./sih26141/Dockerfile
-    dockerContext: ./sih26141
+    # Monorepo: this blueprint lives inside sih26141/, so pin the service
+    # root directory there. dockerfilePath / dockerContext are resolved
+    # RELATIVE TO rootDir (Render docs: Monorepo Support → root-relative
+    # settings), so they point at the Dockerfile in this same folder.
+    rootDir: sih26141
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     plan: free # upgrade to "starter" for always-on 24/7 + a persistent disk
     healthCheckPath: /api/health
     autoDeploy: true
