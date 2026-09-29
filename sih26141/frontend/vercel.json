@@ -1,9 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "https://REPLACE-WITH-YOUR-RENDER-URL.onrender.com/api/$1"
-    }
+    { "source": "/api/(.*)", "destination": "https://sih26141-quantum-pipeline.onrender.com/api/$1" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
