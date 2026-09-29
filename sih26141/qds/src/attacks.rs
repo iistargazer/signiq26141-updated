@@ -5,10 +5,10 @@
 //! verifier must reject all of them; `estimate_forgery_probability` in the
 //! root module quantifies how overwhelming "must" is.
 
+use crate::temporal::{self, sha256_hex};
 use crate::{QuantumSignature, Trent};
 use rand::Rng;
 use sha2::{Digest, Sha256};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttackKind {
@@ -28,6 +28,9 @@ pub enum AttackKind {
     /// the attacker lacks the correlation tables, so no verdict they reach
     /// can be trusted — the framework flags the attempt itself.
     UnauthorizedVerification,
+    /// The attacker invents a future sifting-window timestamp hoping to
+    /// bypass the temporal trap — the hash-chain check catches it.
+    TimestampForgery,
 }
 
 /// A forged signature attempt plus metadata for the dashboard.
@@ -45,6 +48,20 @@ fn message_hash(message: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(message);
     hex::encode(h.finalize())
+}
+
+/// Build a forged future timestamp: the attacker invents a far-future
+/// sifting window and mints a self-consistent-looking chain link. The link
+/// does not extend the notary's history, so the trap's chain check catches
+/// it even though every other field looks plausible.
+fn forged_future_binding(bits: &[u8], nonce: u64, commitment: &str) -> temporal::TemporalBinding {
+    let forged_ts = temporal::QuantumTimestamp {
+        window: u64::MAX / 2,
+        unix_ms: 0,
+        entropy_hex: "00000000000000000000000000000000".into(),
+        chain_hex: sha256_hex(&[b"attacker-forged-link"]),
+    };
+    temporal::bind_signature(forged_ts, temporal::GENESIS_LINK, bits, nonce, commitment)
 }
 
 /// Expose the message-hash binding used by the impersonation check
@@ -66,6 +83,7 @@ pub fn attempt_forgery(
             correction_bits: (0..n).map(|_| rng.gen_bool(0.5) as u8).collect(),
             nonce: trent.issue_nonce(),
             key_commitment: trent.public_key().correlation_commitment.clone(),
+            temporal: None,
         },
         description: "Forger fabricated Bell outcomes uniformly at random (no quantum measurement performed)."
             .into(),
@@ -88,8 +106,12 @@ pub fn attempt_impersonation(
             correction_bits: genuine.correction_bits.clone(),
             nonce: genuine.nonce,
             key_commitment: genuine.key_commitment.clone(),
+            // The attacker also steals the temporal binding — the tag check
+            // catches it: the tag welds the timestamp to the ORIGINAL
+            // signature bits, which no longer match this attempt's context.
+            temporal: genuine.temporal.clone(),
         },
-        description: "Attacker transplanted a genuine signature onto a different message (no new teleportation possible without Alice's correlations).".into(),
+        description: "Attacker transplanted a genuine signature (timestamp included) onto a different message; the temporal tag and the message-hash statistics both break.".into(),
         claimed_message: String::from_utf8_lossy(target_message).into_owned(),
     }
 }
@@ -102,10 +124,41 @@ pub fn attempt_replay(genuine: &QuantumSignature, message: &[u8]) -> AttackAttem
             correction_bits: genuine.correction_bits.clone(),
             nonce: genuine.nonce,
             key_commitment: genuine.key_commitment.clone(),
+            // The binding rides along — this is the point: even a PERFECT
+            // copy of a past signature is dead, because its sifting window
+            // was consumed by the original acceptance.
+            temporal: genuine.temporal.clone(),
         },
-        description: "Attacker replayed a previously accepted signature verbatim (nonce reuse)."
+        description: "Attacker replayed a previously accepted signature verbatim (consumed sifting window + nonce)."
             .into(),
         claimed_message: String::from_utf8_lossy(message).into_owned(),
+    }
+}
+
+/// Timestamp forgery: the attacker forges a far-future quantum-entropy
+/// timestamp (window + chain link) onto otherwise-plausible signature bits,
+/// trying to slip past the temporal trap. The chain check rejects it: the
+/// forged link extends nothing the notary ever minted.
+pub fn attempt_timestamp_forgery(
+    trent: &mut Trent,
+    claimed_message: &[u8],
+    rng: &mut impl Rng,
+) -> AttackAttempt {
+    let n = trent.public_key().qubit_count * trent.public_key().lambda * 2;
+    let bits: Vec<u8> = (0..n).map(|_| rng.gen_bool(0.5) as u8).collect();
+    let nonce = trent.issue_nonce();
+    let commitment = trent.public_key().correlation_commitment.clone();
+    AttackAttempt {
+        kind: AttackKind::TimestampForgery,
+        signature: QuantumSignature {
+            correction_bits: bits.clone(),
+            nonce,
+            key_commitment: commitment.clone(),
+            temporal: Some(forged_future_binding(&bits, nonce, &commitment)),
+        },
+        description: "Attacker minted a far-future quantum-entropy timestamp (forged hash-chain link) to bypass the temporal trap; the chain check rejects it."
+            .into(),
+        claimed_message: String::from_utf8_lossy(claimed_message).into_owned(),
     }
 }
 
@@ -141,6 +194,7 @@ pub fn attempt_channel_tampering(
             // nonce supplied by caller flow in server; 0 = take a fresh one
             nonce: 0,
             key_commitment: trent.public_key().correlation_commitment.clone(),
+            temporal: None,
         },
         description: format!(
             "Eve disturbed {:.0}% of teleported qubits in flight ({} of {} positions); correction bits decode inconsistently at the receiver.",
@@ -174,6 +228,7 @@ pub fn attempt_unauthorized_verification(
             correction_bits: genuine.correction_bits.clone(),
             nonce: genuine.nonce,
             key_commitment: genuine.key_commitment.clone(),
+            temporal: genuine.temporal.clone(),
         },
         description: "Unauthorized party attempted verification without Trent-issued key material; the attempt is flagged and the verdict is untrustworthy."
             .into(),

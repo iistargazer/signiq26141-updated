@@ -94,12 +94,6 @@ pub struct AuditLog {
     index: HashMap<u64, usize>,
 }
 
-fn sha256_hex(data: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(data);
-    hex::encode(h.finalize())
-}
-
 /// Length-prefix one field for the v2 framing.
 fn framed(field: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + field.len());
@@ -221,7 +215,7 @@ impl AuditLog {
                 .map(|pair| {
                     let l = &pair[0];
                     let r = pair.get(1).unwrap_or(&pair[0]);
-                    sha256_hex(format!("{l}{r}").as_bytes())
+                    node_hash(l, r)
                 })
                 .collect();
             i /= 2;
@@ -234,14 +228,59 @@ impl AuditLog {
         })
     }
 
+    /// Inclusion proofs for every entry, computed from one shared set of
+    /// Merkle levels. This is O(n log n) for a portable audit export instead
+    /// of rebuilding the entire tree once per entry.
+    pub fn inclusion_proofs(&self) -> Vec<InclusionProof> {
+        if self.entries.is_empty() {
+            return Vec::new();
+        }
+
+        let mut levels = vec![self.entries.iter().map(|e| e.leaf_hash.clone()).collect::<Vec<_>>()];
+        while levels.last().is_some_and(|level| level.len() > 1) {
+            let parent = levels
+                .last()
+                .expect("the leaf level exists")
+                .chunks(2)
+                .map(|pair| node_hash(&pair[0], pair.get(1).unwrap_or(&pair[0])))
+                .collect();
+            levels.push(parent);
+        }
+        let root = levels.last().and_then(|level| level.first()).cloned().unwrap_or_default();
+
+        self.entries
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| {
+                let mut position = idx;
+                let mut siblings = Vec::with_capacity(levels.len().saturating_sub(1));
+                for level in levels.iter().take(levels.len().saturating_sub(1)) {
+                    let sibling_index = if position % 2 == 0 { position + 1 } else { position - 1 };
+                    let side = if position % 2 == 0 { "R" } else { "L" };
+                    let sibling = level.get(sibling_index).unwrap_or(&level[position]);
+                    siblings.push(format!("{side}:{sibling}"));
+                    position /= 2;
+                }
+                InclusionProof {
+                    seq: entry.seq,
+                    leaf_hash: entry.leaf_hash.clone(),
+                    siblings,
+                    root: root.clone(),
+                }
+            })
+            .collect()
+    }
+
     /// Verify a Merkle inclusion proof against a root.
+    /// Interior nodes hash with the RFC 6962 `0x01` prefix — the same
+    /// construction `merkle_root` uses (they must match exactly).
     pub fn verify_inclusion(proof: &InclusionProof) -> bool {
         let mut cur = proof.leaf_hash.clone();
         for sib in &proof.siblings {
             let (side, hash) = sib.split_once(':').unwrap_or(("L", ""));
             cur = match side {
-                "L" => sha256_hex(format!("{hash}{cur}").as_bytes()),
-                _ => sha256_hex(format!("{cur}{hash}").as_bytes()),
+                "L" => node_hash(hash, &cur),
+                _ => node_hash(&cur, hash),
             };
         }
         cur == proof.root
@@ -352,11 +391,25 @@ fn merkle_root(leaves: &[String]) -> Option<String> {
             .map(|pair| {
                 let l = &pair[0];
                 let r = pair.get(1).unwrap_or(&pair[0]);
-                sha256_hex(format!("{l}{r}").as_bytes())
+                node_hash(l, r)
             })
             .collect();
     }
     Some(level[0].clone())
+}
+
+/// Interior-node hash with the RFC 6962 domain-separation prefix. Without
+/// it a tree of leaves can collide with a single crafted leaf whose bytes
+/// encode the concatenation (the classic Merkle second-preimage attack).
+/// `0x01` is the interior-node tag from the CT spec. Odd trailing nodes
+/// duplicate (Bitcoin-style) — duplicated nodes are also hashed with the
+/// interior prefix so the construction stays collision-averse.
+fn node_hash(left: &str, right: &str) -> String {
+    let mut h = Sha256::new();
+    h.update([0x01u8]);
+    h.update(left.as_bytes());
+    h.update(right.as_bytes());
+    hex::encode(h.finalize())
 }
 
 #[cfg(test)]
@@ -431,10 +484,32 @@ mod tests {
     }
 
     #[test]
+    fn bulk_inclusion_proofs_match_individual_proofs_for_odd_tree() {
+        let mut log = AuditLog::new();
+        for i in 0..17 {
+            log.append("event", "node", i % 3 != 0, &format!("event {i}"), "H", &ts());
+        }
+        let proofs = log.inclusion_proofs();
+        assert_eq!(proofs.len(), log.len());
+        for (index, proof) in proofs.iter().enumerate() {
+            assert_eq!(proof.seq, index as u64 + 1);
+            assert_eq!(proof.root, log.root().unwrap());
+            assert!(AuditLog::verify_inclusion(proof), "bulk proof for seq {}", proof.seq);
+            assert_eq!(
+                proof.siblings,
+                log.inclusion_proof(proof.seq).unwrap().siblings,
+                "bulk proof path for seq {} must match the single proof endpoint",
+                proof.seq
+            );
+        }
+    }
+
+    #[test]
     fn empty_log_has_no_root() {
         let log = AuditLog::new();
         assert!(log.root().is_none());
         assert!(log.inclusion_proof(1).is_none());
+        assert!(log.inclusion_proofs().is_empty());
     }
 
     #[test]

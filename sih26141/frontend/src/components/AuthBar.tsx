@@ -10,7 +10,7 @@ import {
 /**
  * Account bar for the multi-user website: register / login / logout.
  *
- * The bearer token lives in localStorage; the server scopes session keys,
+ * The bearer token lives in sessionStorage; the server scopes session keys,
  * quorum splits, and the P2P inbox per user, so two laptops with two
  * accounts never see each other's documents. When the persisted token is
  * stale (server restart wipes the in-memory session table) the bar falls
@@ -92,8 +92,9 @@ export function AuthBar({
   if (user) {
     return (
       <div className="auth-bar">
+        <span className="auth-label">Signed in</span>
         <span className="chip chip-green">{user}</span>
-        <span className="dim">your keys, seals and inbox are private to this account</span>
+        <span className="auth-note">your keys, seals and inbox are private to this account</span>
         <button className="btn btn-sm" onClick={logout} disabled={busy}>
           log out
         </button>
@@ -102,8 +103,8 @@ export function AuthBar({
   }
 
   return (
-    <div className="auth-bar">
-      <span className="dim">anonymous workspace —</span>
+    <div className="auth-bar auth-bar-anonymous">
+      <span className="auth-label">Account</span>
       <input
         className="text-input auth-input"
         placeholder="username"
@@ -129,6 +130,7 @@ export function AuthBar({
       <button className="btn btn-sm" onClick={() => doAuth('register')} disabled={busy}>
         register
       </button>
+      <span className="auth-note">keys, seals &amp; inbox become private to you</span>
       {error && <span className="auth-error">{error}</span>}
     </div>
   )

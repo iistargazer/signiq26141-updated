@@ -23,6 +23,10 @@ pub struct QdsState {
     pub trent: Mutex<Trent>,
     pub log_path: PathBuf,
     pub log: Mutex<Vec<QdsEvent>>,
+    /// Path of the replay-trap state file (JSON snapshot of Trent's
+    /// consumed nonces/windows + chain). Rewritten after every mutation,
+    /// restored at boot — a restart must not re-arm captured signatures.
+    replay_state_path: PathBuf,
 }
 
 impl QdsState {
@@ -44,10 +48,54 @@ impl QdsState {
                 Trent::setup(qubit_count, lambda, &mut rng)
             }
         };
-        Self {
+        let replay_state_path = log_path.with_extension("replay-state.json");
+        let state = Self {
             trent: Mutex::new(trent),
             log_path,
             log: Mutex::new(Vec::new()),
+            replay_state_path,
+        };
+        state.restore_replay_state();
+        state
+    }
+
+    /// Restore the replay-trap memory from disk (boot path). Only applied
+    /// when the file exists AND the notary is seeded — an unseeded Trent's
+    /// tables cannot match any persisted ledger, so restoring would corrupt
+    /// verification (every signature would fail the statistics).
+    fn restore_replay_state(&self) {
+        let seeded = std::env::var("TRENT_SEED").is_ok();
+        if !seeded {
+            return;
+        }
+        let Ok(text) = std::fs::read_to_string(&self.replay_state_path) else {
+            return;
+        };
+        match serde_json::from_str::<qds::ReplayStateSnapshot>(&text) {
+            Ok(snap) => {
+                if let Ok(mut trent) = self.trent.lock() {
+                    trent.replay_restore(&snap);
+                }
+            }
+            Err(e) => {
+                // Corrupt file: start fresh rather than refuse to boot.
+                eprintln!("qds replay-state restore failed (starting fresh): {e}");
+            }
+        }
+    }
+
+    /// Persist the replay-trap memory (called after every sign/verify that
+    /// mutates Trent). Best-effort: a failed write is logged but never
+    /// blocks the API — the next mutation retries.
+    pub fn persist_replay_state(&self) {
+        if let Ok(trent) = self.trent.lock() {
+            let snap = trent.replay_snapshot();
+            if let Ok(json) = serde_json::to_string_pretty(&snap) {
+                let tmp = self.replay_state_path.with_extension("json.tmp");
+                if std::fs::write(&tmp, json).is_ok() {
+                    let _ = std::fs::rename(&tmp, &self.replay_state_path);
+                }
+            }
         }
     }
 
@@ -151,6 +199,12 @@ pub fn run_verify(
             charlie.map(|ag| format!(" [Charlie consensus: {ag}]")).unwrap_or_default()
         ),
     );
+    // An acceptance consumed a nonce + sifting window — persist the trap's
+    // memory so a restart cannot re-arm what was just accepted.
+    if report.accepted {
+        drop(trent);
+        state.persist_replay_state();
+    }
     QdsOutcome {
         label: label.to_string(),
         kind: kind.to_string(),
@@ -173,6 +227,7 @@ pub fn run_attack(
         qds::AttackKind::Replay => "replay",
         qds::AttackKind::ChannelTampering => "channel_tampering",
         qds::AttackKind::UnauthorizedVerification => "unauthorized_verification",
+        qds::AttackKind::TimestampForgery => "timestamp_forgery",
     };
     run_verify(state, "attack", kind_str, message, &attempt.signature, attempt.description)
 }

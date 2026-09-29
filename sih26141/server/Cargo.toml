@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 quantum = { path = "../quantum" }
+pa = { path = "../pa" }
 detection = { path = "../detection" }
 crypto = { path = "../crypto" }
 qds = { path = "../qds" }

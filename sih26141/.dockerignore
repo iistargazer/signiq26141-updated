@@ -4,7 +4,20 @@ frontend/node_modules/
 frontend/dist/
 .git/
 .freebuff/
+.cfreebuff/
+
+# Agent session memory never ships in an image
+AGENTS.md
+history.md
+
+# Presenter-internal documents stay out of the image (see docs/internal/README.md)
+docs/internal/
+
+# Runtime data — created by the server, never baked into an image
 audit_log.jsonl
 qds_events.jsonl
+qds_events.replay-state.json
 users.json
+server-port.json
 *.log
+*.tmp

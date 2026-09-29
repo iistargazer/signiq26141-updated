@@ -13,6 +13,8 @@ import {
   type QuorumUnlockResponse,
   type DistributeResponse,
 } from '../api'
+import { Rite } from './Rite'
+import { sliderFillStyle } from '../sliderFill'
 
 /** Minimal document glyph for the dropzone (stroke inherits currentColor). */
 function DocIcon() {
@@ -48,7 +50,15 @@ interface QuorumRow {
   checked: boolean
 }
 
-export function DocVault({ onLog }: { onLog: (line: string) => void }) {
+export function DocVault({
+  onLog,
+  authUser,
+  authRevision,
+}: {
+  onLog: (line: string) => void
+  authUser: string | null
+  authRevision: number
+}) {
   const [session, setSession] = useState<SessionInfo | null>(null)
   const [file, setFile] = useState<{ name: string; bytes: Uint8Array } | null>(null)
   const [useQuorum, setUseQuorum] = useState(false)
@@ -62,6 +72,13 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
   const [quorumRows, setQuorumRows] = useState<QuorumRow[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Rite overlays: seal / verify / deliver — one stage, three choreographies.
+  const [rite, setRite] = useState<{
+    mode: 'seal' | 'verify' | 'deliver'
+    name: string
+    detail: string
+    ok: boolean
+  } | null>(null)
   // Cross-account multiparty state (distribute / pledge / pledged unlock)
   const [registeredUsers, setRegisteredUsers] = useState<string[]>([])
   const [officerUsers, setOfficerUsers] = useState<string[]>([])
@@ -86,14 +103,31 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
         setPledgesReceived(q.pledges_received ?? 0)
       })
       .catch(() => {})
-    if (getAuthUsername()) {
+    if (authUser) {
       authApi.users().then((r) => setRegisteredUsers(r.users)).catch(() => {})
+    } else {
+      setRegisteredUsers([])
     }
-  }, [])
+  }, [authUser])
 
   useEffect(() => {
+    // Never leave one account's key state or document controls visible after
+    // switching to another account or back to the shared demo workspace.
+    setSession(null)
+    setSealResp(null)
+    setVerify(null)
+    setUnlockResp(null)
+    setOpened(null)
+    setQdsKey(null)
+    setQuorumRows([])
+    setOfficerUsers([])
+    setDistributeResp(null)
+    setHeldShare(null)
+    setPledgesReceived(0)
+    setRite(null)
+    setError(null)
     refreshSession()
-  }, [refreshSession])
+  }, [authRevision, refreshSession])
 
   const onFile = (f: File | null) => {
     setError(null)
@@ -138,6 +172,7 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
       setUnlockResp(null)
       setOpened(null)
       setDistributeResp(null)
+      setRite({ mode: 'seal', name: resp.name, detail: resp.key_commitment, ok: true })
       if (resp.quorum) {
         // Pre-fill the officer list with other registered accounts.
         const others = registeredUsers.filter((u) => u !== getAuthUsername())
@@ -176,6 +211,12 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
       if (!sealResp) return
       const resp = await docApi.open({ container_b64: sealResp.container_b64 })
       setOpened(resp)
+      setRite({
+        mode: 'deliver',
+        name: resp.name,
+        detail: `original bytes recovered · ${resp.unlocked_via}`,
+        ok: true,
+      })
       onLog(`unlocked '${resp.name}' — ${resp.unlocked_via}`)
       refreshAuditNow()
     })
@@ -191,6 +232,8 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
       if (!sealResp) return
       const resp = await docApi.verify(sealResp.container_b64)
       setVerify(resp.outcome)
+      const passed = resp.outcome.format_ok && resp.outcome.authentic && resp.outcome.integrity
+      setRite({ mode: 'verify', name: sealResp.name, detail: resp.outcome.note, ok: passed })
       onLog(`verify '${sealResp.name}': ${resp.outcome.note}`)
       refreshAuditNow()
     })
@@ -262,6 +305,16 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
 
   return (
     <section className="panel">
+      {rite && (
+        <Rite
+          mode={rite.mode}
+          open
+          fileName={rite.name}
+          detail={rite.detail}
+          ok={rite.ok}
+          onFinish={() => setRite(null)}
+        />
+      )}
       <div className="panel-title-row">
         <div className="panel-title">Quantum Document Vault</div>
         <div className="vault-session">
@@ -322,7 +375,7 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
                 <span>
                   threshold k = <b>{k}</b>
                 </span>
-                <input type="range" min={2} max={m} step={1} value={k} onChange={(e) => setK(Number(e.target.value))} />
+                <input type="range" min={2} max={m} step={1} value={k} style={sliderFillStyle(2, m, k)} onChange={(e) => setK(Number(e.target.value))} />
               </label>
               <label className="control">
                 <span>
@@ -334,6 +387,7 @@ export function DocVault({ onLog }: { onLog: (line: string) => void }) {
                   max={10}
                   step={1}
                   value={m}
+                  style={sliderFillStyle(k, 10, m)}
                   onChange={(e) => {
                     const v = Number(e.target.value)
                     setM(v)

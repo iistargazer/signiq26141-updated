@@ -202,6 +202,8 @@ pub struct QsigDocument {
 /// A teleportation-QDS signature attached to a sealed container.
 /// `correction_bits` is the flattened Bell-outcome sequence (0/1 bytes,
 /// base64-encoded — the same wire codec as the payload ciphertext).
+/// `temporal` carries the quantum-entropy timestamp binding (Feature 2);
+/// `None` only on legacy containers predating the temporal trap.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QdsSigAttachment {
     #[serde(with = "b64_bytes")]
@@ -211,6 +213,8 @@ pub struct QdsSigAttachment {
     pub key_commitment: String,
     /// Scheme label ("teleport-qds-v1").
     pub scheme: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporal: Option<qds::temporal::TemporalBinding>,
 }
 
 /// serde codec: ciphertext as standard base64 (accepts legacy number arrays).
@@ -922,6 +926,7 @@ mod tests {
             nonce: 7,
             key_commitment: "abc".into(),
             scheme: "teleport-qds-v1".into(),
+            temporal: None,
         });
         let parsed = unseal_envelope(&parse_container(&container_bytes(&doc)).unwrap(), SECRET).unwrap();
         assert_eq!(parsed.qds_sig, doc.qds_sig);

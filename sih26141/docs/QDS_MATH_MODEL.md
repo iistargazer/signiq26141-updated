@@ -5,8 +5,9 @@ covering every component named in the problem statement: **Bell-state
 entanglement, quantum teleportation, Pauli correction operations, and
 projective measurement rules.**
 
-*Companion documents:* `PROJECT_GUIDE.md` (full theory + codebase tour) and
-`JUDGE_PITCH.md` (presentation playbook). This document is the formal
+*Companion documents:* the [technical whitepaper](SIGNIQ_WHITEPAPER.md)
+(formal models + evaluation) and the [project handbook](PROJECT_HANDBOOK.md)
+(engineering reference). This document is the formal
 reference — equations first, code pointers alongside.
 
 ---

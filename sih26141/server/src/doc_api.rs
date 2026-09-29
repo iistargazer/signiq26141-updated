@@ -151,6 +151,23 @@ pub struct InboxItem {
     pub container_b64: String,
     pub verified: Option<bool>,
     pub note: Option<String>,
+    /// Consensus-ring delivery (Feature 4 workflow): when set, the sender
+    /// demanded k-of-m independent QDS verifications before this copy may
+    /// open. `attested_by` records verifiers who already attested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ring: Option<RingSpec>,
+}
+
+/// The consensus requirement riding on a ring-delivered document.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct RingSpec {
+    pub k: usize,
+    pub m: usize,
+    /// Usernames whose independent verification counts toward the quorum.
+    pub members: Vec<String>,
+    /// Members who have attested so far (acceptance verdicts only).
+    #[serde(default)]
+    pub attested_by: Vec<String>,
 }
 
 /// One document this user SENT (outbox record). `container_b64` is kept so
@@ -445,7 +462,7 @@ pub(crate) fn capture_session_secret(state: &MainState, user: &str, secret_hex: 
         "keygen",
         "qkd-legacy",
         true,
-        "session key distilled from the QKD demo run (legacy path — prefer the six-state QDS key endpoint)",
+        "session key distilled from a simulated QKD run",
         "",
     );
 }
@@ -626,6 +643,7 @@ async fn doc_seal(
             nonce: signed.signature.nonce,
             key_commitment: signed.signature.key_commitment,
             scheme: "teleport-qds-v1".into(),
+            temporal: signed.signature.temporal,
         });
         accepted
     };
@@ -1431,6 +1449,7 @@ async fn peer_send(
                 nonce: signed.signature.nonce,
                 key_commitment: signed.signature.key_commitment,
                 scheme: "teleport-qds-v1".into(),
+                temporal: signed.signature.temporal,
             });
         }
         let sha = sealed.meta.sha256.clone();
@@ -1633,6 +1652,7 @@ fn deliver_local(
             None => None,
         },
         note: Some(note.clone()),
+        ring: None,
     });
     drop(ws);
     state.doc.audit_append(
@@ -1668,6 +1688,10 @@ pub struct PeerReceiveRequest {
     /// holds no token on the receiving laptop.
     #[serde(default)]
     to_user: Option<String>,
+    /// Consensus-ring delivery (Feature 4 workflow): the sender demands
+    /// k-of-m independent verifications before this inbox copy may open.
+    #[serde(default)]
+    ring: Option<RingSpec>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1751,6 +1775,7 @@ async fn peer_receive(
             container_b64: req.container_b64.clone(),
             verified: if can_verify_now { Some(true) } else { None },
             note: Some(note.clone()),
+            ring: req.ring,
         });
         id
     };
@@ -2279,6 +2304,7 @@ async fn attack_theater(
                 correction_bits: att.correction_bits.clone(),
                 nonce: att.nonce,
                 key_commitment: att.key_commitment.clone(),
+                temporal: att.temporal.clone(),
             };
             crate::qds_keys::verify_document_qds(&mut trent, &mangled_parsed.meta.sha256, &sig)
         });
@@ -2549,16 +2575,16 @@ async fn doc_transfer(
             "portal",
             false,
             &format!(
-                "transfer {transfer_id} aborted: eavesdropping detected on relay route (QBER {:.2}%)",
+                "transfer {transfer_id} aborted: QBER exceeded the configured decision line on the simulated relay route ({:.2}%)",
                 eval.mismatch_rate * 100.0
             ),
             "",
         );
-        send("verify", "Bob", "key distillation ABORTED — channel under attack".into(), "error");
+        send("verify", "Bob", "key distillation ABORTED — simulated QBER decision line exceeded".into(), "error");
         let _ = tx.send(Arc::new(DocEvent::TransferDone {
             transfer_id,
             accepted: false,
-            summary: "aborted: eavesdropping detected".into(),
+            summary: "aborted: simulated QBER exceeded the configured decision line".into(),
         }));
         return Ok(Json(TransferResponse {
             transfer_id,
@@ -2713,6 +2739,18 @@ pub struct AuditEventsResponse {
     pub total: usize,
 }
 
+/// Complete, portable snapshot: every persisted ledger row, its Merkle
+/// inclusion proof, the published root, and a full hash-chain verdict.
+#[derive(Debug, Serialize)]
+pub struct AuditExportResponse {
+    pub format_version: u32,
+    pub entries: Vec<AuditEntry>,
+    pub proofs: Vec<InclusionProof>,
+    pub root: Option<String>,
+    pub total: usize,
+    pub chain: ChainVerdict,
+}
+
 async fn audit_events(
     State(state): State<Arc<MainState>>,
     axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
@@ -2728,6 +2766,29 @@ async fn audit_events(
         root: log.root(),
         total: log.len(),
     })
+}
+
+async fn audit_export(
+    State(state): State<Arc<MainState>>,
+) -> Result<Json<AuditExportResponse>, AppError> {
+    const MAX_EXPORT_ENTRIES: usize = 10_000;
+    let log = state.doc.audit.lock().expect("audit lock poisoned");
+    if log.len() > MAX_EXPORT_ENTRIES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({
+                "error": format!("portable export is limited to {MAX_EXPORT_ENTRIES} entries; use the JSONL log for larger ledgers")
+            })),
+        ));
+    }
+    Ok(Json(AuditExportResponse {
+        format_version: 1,
+        entries: log.entries().to_vec(),
+        proofs: log.inclusion_proofs(),
+        root: log.root(),
+        total: log.len(),
+        chain: log.verify_chain(),
+    }))
 }
 
 async fn audit_root(State(state): State<Arc<MainState>>) -> Json<serde_json::Value> {
@@ -2836,6 +2897,14 @@ async fn qds_derive_key(
 // Open / unlock: recover the original document (download path)
 // ---------------------------------------------------------------------------
 
+/// Look up the ring spec attached to an inbox item being opened (None when
+/// the item isn't ring-delivered or doesn't exist).
+fn resolve_open_ring(state: &MainState, username: &str, inbox_id: Option<u64>) -> Option<RingSpec> {
+    let id = inbox_id?;
+    let ws = state.doc.try_workspace(username)?;
+    ws.inbox.iter().find(|i| i.id == id)?.ring.clone()
+}
+
 #[derive(Debug, Deserialize)]
 pub struct OpenRequest {
     /// Container to open: base64 (preferred) or legacy byte array. Omitted
@@ -2943,6 +3012,23 @@ async fn doc_open(
     // the right key first (factor 0), then run the normal two-factor open.
     let parsed = unseal_against_workspace(&container, &secrets).map_err(bad_request)?;
 
+    // Factor 0.5 — the CONSENSUS GATE (Feature 4 workflow): a ring-delivered
+    // inbox copy opens only after k of its m named verifiers have attested
+    // with independent acceptance verdicts. The receiver cannot skip this:
+    // without k attestations the open is refused with the tally.
+    if let (Some(inbox_id), Some(ring)) = (req.inbox_id, resolve_open_ring(&state, &username, req.inbox_id)) {
+        let satisfied = ring.attested_by.len() >= ring.k;
+        if !satisfied {
+            return Err(bad_request(format!(
+                "CONSENSUS GATE LOCKED — {}/{} attestations (k = {}). Ring members must independently verify this document first (POST /api/doc/ring/attest).",
+                ring.attested_by.len(),
+                ring.m,
+                ring.k
+            )));
+        }
+        let _ = inbox_id; // binding used above
+    }
+
     // Factor 1: symmetric seal verification + plaintext recovery.
     let mut best: Option<(Vec<u8>, sealing::VerificationOutcome)> = None;
     let mut last_err = String::new();
@@ -2967,6 +3053,7 @@ async fn doc_open(
                 correction_bits: att.correction_bits.clone(),
                 nonce: att.nonce,
                 key_commitment: att.key_commitment.clone(),
+                temporal: att.temporal.clone(),
             };
             crate::qds_keys::verify_document_qds(&mut trent, &parsed.meta.sha256, &sig)
         })
@@ -3378,6 +3465,7 @@ async fn relay_claim(
             container_b64: deposit.container_b64.clone(),
             verified: None,
             note: Some("claimed from the cross-LAN relay — verify to confirm integrity".into()),
+            ring: None,
         });
         id
     };
@@ -3505,6 +3593,304 @@ async fn audit_clear(
 }
 
 // ---------------------------------------------------------------------------
+// Consensus-ring delivery workflow (Feature 4 fused with P2P)
+// ---------------------------------------------------------------------------
+
+/// Body of POST /api/doc/ring/send — deliver a sealed container to k-of-m
+/// ring members as inbox copies carrying the consensus requirement.
+#[derive(Debug, Deserialize)]
+pub struct RingSendRequest {
+    /// Sealed .qsig container bytes (base64) — the SAME container every
+    /// member receives (independence comes from their channels/verdicts,
+    /// not from different copies).
+    container_b64: String,
+    /// The ring: exactly m member usernames; the sender is excluded.
+    members: Vec<String>,
+    /// Attestations required to open (k of m). Default m (unanimous).
+    #[serde(default)]
+    k: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RingSendResponse {
+    pub accepted: Vec<String>,
+    pub missing: Vec<String>,
+    pub k: usize,
+    pub m: usize,
+    pub note: String,
+}
+
+/// Deliver one sealed document to a consensus ring: every member gets an
+/// inbox copy with the RingSpec attached; each member then verifies
+/// independently (their own session, their own verdict) and attests. The
+/// recipient's open stays locked until k attestations exist.
+pub async fn ring_send(
+    State(state): State<Arc<MainState>>,
+    user: OptionalAuth,
+    Json(req): Json<RingSendRequest>,
+) -> Result<Json<RingSendResponse>, AppError> {
+    let username = user.0.unwrap_or_else(|| SHARED_WORKSPACE.into());
+    if req.members.is_empty() || req.members.len() > 8 {
+        return Err(bad_request("ring size must be 1..=8 members".into()));
+    }
+    if req.members.iter().any(|m| m == &username) {
+        return Err(bad_request("the sender cannot be a ring member".into()));
+    }
+    let m = req.members.len();
+    let k = req.k.unwrap_or(m);
+    if k == 0 || k > m {
+        return Err(bad_request("k must be between 1 and m".into()));
+    }
+    let container = b64_decode(&req.container_b64)
+        .ok_or_else(|| bad_request("container_b64 is not valid base64".into()))?;
+    let parsed = parse_container(&container).map_err(bad_request)?;
+    let doc_name = if parsed.meta.name.is_empty() {
+        "(sealed)".into()
+    } else {
+        parsed.meta.name.clone()
+    };
+
+    let mut accepted = Vec::new();
+    let mut missing = Vec::new();
+    for member in &req.members {
+        let member = member.trim();
+        if state.doc.try_workspace(member).is_none() {
+            missing.push(member.to_string());
+            continue;
+        }
+        let mut ws = state.doc.workspace(member);
+        let id = ws.inbox_counter;
+        ws.inbox_counter += 1;
+        ws.inbox.push(InboxItem {
+            id,
+            received_at: chrono_now(),
+            from_peer: format!("{username} (consensus ring)"),
+            meta: parsed.meta.clone(),
+            container_b64: req.container_b64.clone(),
+            verified: None,
+            note: Some(format!(
+                "consensus-ring delivery: k = {k} of {m} independent verifications required before this copy opens"
+            )),
+            ring: Some(RingSpec {
+                k,
+                m,
+                members: req.members.clone(),
+                attested_by: Vec::new(),
+            }),
+        });
+        drop(ws);
+        state.doc.audit_append(
+            member,
+            "transfer",
+            "ring-deliver",
+            true,
+            &format!("{doc_name} queued for consensus verification (k={k} of {m}) from {username}"),
+            &parsed.meta.sha256,
+        );
+        accepted.push(member.to_string());
+    }
+
+    // Sender's outbox record.
+    if let Some(mut ws) = workspace_if_exists(state.as_ref(), &username) {
+        let id = ws.outbox_counter;
+        ws.outbox_counter += 1;
+        ws.outbox.push(OutboxItem {
+            id,
+            sent_at: chrono_now(),
+            to_peer: req.members.join(", "),
+            via: "ring".into(),
+            meta: parsed.meta.clone(),
+            container_b64: req.container_b64.clone(),
+            delivered: !accepted.is_empty(),
+            claim_code: None,
+            summary: format!(
+                "consensus ring: {}/{} members reachable — unlock at k = {k} attestations",
+                accepted.len(),
+                m
+            ),
+        });
+    }
+    state.doc.audit_append(
+        &username,
+        "transfer",
+        "ring-send",
+        !accepted.is_empty(),
+        &format!(
+            "{doc_name} sent to consensus ring of {m} (k = {k}); delivered to {} members",
+            accepted.len()
+        ),
+        &parsed.meta.sha256,
+    );
+
+    let note = if missing.is_empty() {
+        format!("delivered to all {m} members — waiting for {k} attestations")
+    } else {
+        format!(
+            "delivered to {} of {m}; unreachable: {} — unlock at k = {k} attestations",
+            accepted.len(),
+            missing.join(", ")
+        )
+    };
+    Ok(Json(RingSendResponse { accepted, missing, k, m, note }))
+}
+
+/// Body of POST /api/doc/ring/attest — a ring member's independent
+/// verification verdict on a ring-delivered inbox copy.
+#[derive(Debug, Deserialize)]
+pub struct RingAttestRequest {
+    /// The inbox item to attest (the member's own copy).
+    inbox_id: u64,
+    /// Whose attestation this is (the verifying member).
+    member: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RingAttestResponse {
+    pub attested: bool,
+    pub verdict: Option<String>,
+    pub reason: Option<String>,
+    /// Tally after this attestation.
+    pub attested_count: usize,
+    pub k: usize,
+    pub m: usize,
+    /// Quorum satisfied — the receiving user's open gate is now unlocked.
+    pub quorum_ok: bool,
+    pub note: String,
+}
+
+/// A ring member runs their INDEPENDENT verification of the ring-delivered
+/// document (their own key material, Trent's temporal trap, the full
+/// statistics — the same path as a normal open, minus the quorum gate) and
+/// records the verdict as an attestation. A member whose verification fails
+/// attests negatively (records the rejection) — the tally counts only
+/// acceptances, so a compromised member cannot forge consensus, and honest
+/// rejections are visible in the audit trail.
+pub async fn ring_attest(
+    State(state): State<Arc<MainState>>,
+    Json(req): Json<RingAttestRequest>,
+) -> Result<Json<RingAttestResponse>, AppError> {
+    // Fetch the member's copy.
+    let (container_b64, ring) = {
+        let ws = state.doc.workspace(&req.member);
+        let item = ws
+            .inbox
+            .iter()
+            .find(|i| i.id == req.inbox_id)
+            .ok_or_else(|| bad_request(format!("inbox item {} not found for {}", req.inbox_id, req.member)))?;
+        let ring = item
+            .ring
+            .clone()
+            .ok_or_else(|| bad_request("that inbox item is not a consensus-ring delivery".into()))?;
+        (item.container_b64.clone(), ring)
+    };
+    if !ring.members.contains(&req.member) {
+        return Err(bad_request("attester is not a member of this ring".into()));
+    }
+    if ring.attested_by.contains(&req.member) {
+        return Err(bad_request("this member already attested".into()));
+    }
+    let container = b64_decode(&container_b64)
+        .ok_or_else(|| bad_request("stored container is not valid base64".into()))?;
+
+    // The member's independent verification: their own session secrets,
+    // the seal, and the embedded QDS signature via Trent.
+    let secrets = {
+        let ws = state.doc.workspace(&req.member);
+        ws.session.known_secrets()
+    };
+    let parsed = unseal_against_workspace(&container, &secrets);
+    let (verdict, reason) = match &parsed {
+        Err(e) => ("REJ".to_string(), format!("seal verification failed: {e}")),
+        Ok(doc) => {
+            let seal_ok = secrets.iter().any(|key| {
+                sealing::open_document(doc, key).map(|(_, o)| o.passed()).unwrap_or(false)
+            });
+            let qds_report = {
+                let holder = state.qds.lock().expect("qds lock poisoned");
+                let mut trent = holder.inner.trent.lock().expect("trent lock poisoned");
+                doc.qds_sig.as_ref().map(|att| {
+                    let sig = qds::QuantumSignature {
+                        correction_bits: att.correction_bits.clone(),
+                        nonce: att.nonce,
+                        key_commitment: att.key_commitment.clone(),
+                        temporal: att.temporal.clone(),
+                    };
+                    crate::qds_keys::verify_document_qds(&mut trent, &doc.meta.sha256, &sig)
+                })
+            };
+            match qds_report {
+                Some(r) if !r.accepted => (
+                    "REJ".to_string(),
+                    format!("quantum signature rejected: {}", r.reason),
+                ),
+                Some(_r) if !seal_ok => (
+                    "REJ".to_string(),
+                    "quantum signature valid but the symmetric seal does not verify under this member's key".into(),
+                ),
+                Some(r) => (format!("{:?}", r.verdict).to_uppercase(), r.reason.to_string()),
+                None if seal_ok => (
+                    "ACCEPT".to_string(),
+                    "seal verified (container carries no QDS attachment)".into(),
+                ),
+                None => ("REJ".to_string(), "seal does not verify under this member's key".into()),
+            }
+        }
+    };
+    let accepted_verdict = verdict == "ACC1" || verdict == "ACC0" || verdict == "ACCEPT";
+
+    // Record the attestation on every member's copy (shared tally).
+    let (attested_count, quorum_ok) = {
+        let mut count = 0usize;
+        let mut ok = false;
+        for member_name in &ring.members {
+            if let Some(mut ws) = workspace_if_exists(state.as_ref(), member_name) {
+                if let Some(item) = ws.inbox.iter_mut().find(|i| i.id == req.inbox_id) {
+                    if let Some(r) = item.ring.as_mut() {
+                        if accepted_verdict && !r.attested_by.contains(&req.member) {
+                            r.attested_by.push(req.member.clone());
+                        }
+                        count = r.attested_by.len();
+                        ok = count >= r.k;
+                    }
+                }
+            }
+        }
+        (count, ok)
+    };
+
+    state.doc.audit_append(
+        &req.member,
+        "verify",
+        "ring-attest",
+        accepted_verdict,
+        &format!(
+            "ring attestation {}: {} — tally {attested_count}/{} (k = {}) quorum {}",
+            if accepted_verdict { "ACCEPT" } else { "REJECT" },
+            reason,
+            ring.m,
+            ring.k,
+            if quorum_ok { "SATISFIED" } else { "pending" }
+        ),
+        "",
+    );
+
+    Ok(Json(RingAttestResponse {
+        attested: accepted_verdict,
+        verdict: Some(verdict),
+        reason: Some(reason),
+        attested_count,
+        k: ring.k,
+        m: ring.m,
+        quorum_ok,
+        note: if quorum_ok {
+            "quorum satisfied — the recipient's open gate is unlocked".into()
+        } else {
+            format!("{attested_count} of k = {} attestations so far", ring.k)
+        },
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Router + codec helpers
 // ---------------------------------------------------------------------------
 
@@ -3532,6 +3918,9 @@ pub fn doc_router() -> Router<Arc<MainState>> {
         .route("/api/doc/inbox", get(inbox_list))
         .route("/api/doc/inbox/verify", post(inbox_verify))
         .route("/api/doc/inbox/{id}", delete(inbox_delete))
+        // Consensus-ring delivery workflow (Feature 4 fused with P2P).
+        .route("/api/doc/ring/send", post(ring_send))
+        .route("/api/doc/ring/attest", post(ring_attest))
         .route("/api/doc/outbox", get(outbox_list))
         .route("/api/doc/outbox/{id}", delete(outbox_delete))
         .route("/api/doc/wire-proof", get(wire_proof))
@@ -3543,6 +3932,7 @@ pub fn doc_router() -> Router<Arc<MainState>> {
         .route("/api/doc/events", get(doc_events_sse))
         // audit
         .route("/api/audit/events", get(audit_events))
+        .route("/api/audit/export", get(audit_export))
         .route("/api/audit/root", get(audit_root))
         .route("/api/audit/proof", get(audit_proof))
         .route("/api/audit/verify", get(audit_verify))

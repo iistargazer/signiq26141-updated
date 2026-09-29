@@ -1,3 +1,13 @@
+export interface SecurityAccounting {
+  raw_bits: number
+  eve_bits: number
+  reconciliation_leakage: number
+  min_entropy_bits: number
+  output_bits: number
+  epsilon: number | null
+  finite_key_ok: boolean
+}
+
 export interface ScenarioResult {
   scenario: string
   intercept_ratio: number
@@ -13,6 +23,8 @@ export interface ScenarioResult {
   qber: number
   dynamic_threshold: number
   is_authentic: boolean
+  /** True only when the modeled entropy budget produced a key. */
+  key_distilled: boolean
   threat_flagged: boolean
   /** Three-way classification: secure / degraded / under_attack. */
   channel_class?: string
@@ -20,7 +32,23 @@ export interface ScenarioResult {
   derived_secret?: string
   hmac_tag?: string
   hmac_valid?: boolean
+  /** Leftover-hash-lemma paperwork when the key was distilled. */
+  security?: SecurityAccounting
+  /** Classical software-model CHSH diagnostic, not physical certification. */
+  bell_test?: BellTestReport
+  /** Chernoff–Hoeffding dossier from THIS run's actual measurements. */
+  statistical_bounds?: BoundsReport
   note: string
+}
+
+export interface BellTestReport {
+  /** Sampled CHSH S from the classical software model (not a physical experiment). */
+  s: number
+  sigma: number
+  rounds: number
+  certified: boolean
+  margin_sigma: number
+  visibility: number
 }
 
 export interface HopStats {
@@ -94,10 +122,8 @@ const TOKEN_KEY = 'qsig_token'
 const USER_KEY = 'qsig_username'
 
 // Per-tab sessions: the token lives in sessionStorage so two tabs in one
-// browser can hold two DIFFERENT accounts (alice's tab + bob's tab on the
-// same laptop for the two-user demo). LocalStorage would share one identity
-// across tabs and made the second login silently switch the first tab.
-
+// browser can hold two DIFFERENT accounts. LocalStorage would share one
+// identity across tabs and silently switch the first tab on a second login.
 export function getAuthToken(): string | null {
   return sessionStorage.getItem(TOKEN_KEY)
 }
@@ -172,46 +198,33 @@ export function healthCheck(): Promise<string> {
   })
 }
 
-/**
- * Locate the API when the same-origin health check fails.
- *
- * Discovery order:
- * 1. same-origin /api/health (server-served dashboard, or vite proxy in dev)
- * 2. /server-port.json static manifest — the server writes it into the
- *    frontend dist when a port fallback moved it off the requested port
- * 3. adjacent ports 8081..8090 — direct probe (works when the dashboard is
- *    opened via vite dev or a file copy where the manifest is stale)
- *
- * Resolves with the API base URL ("" for same-origin), rejects if none respond.
- */
+/** Locate the API by same origin, server port manifest, then local fallback ports. */
 export async function discoverApiBase(): Promise<string> {
   try {
     await healthCheck()
     return ''
   } catch {
-    /* fall through to discovery */
+    /* continue discovery */
   }
 
-  // 2. static port manifest written by the server on fallback
   try {
     const res = await fetch('/server-port.json', { cache: 'no-store' })
     if (res.ok) {
       const manifest = (await res.json()) as { actual_port?: number }
       if (manifest.actual_port) {
-        const base = `http://127.0.0.1:${manifest.actual_port}`
-        const probe = await fetch(`${base}/api/health`)
-        if (probe.ok) return base
+        const apiBase = `http://127.0.0.1:${manifest.actual_port}`
+        const probe = await fetch(`${apiBase}/api/health`)
+        if (probe.ok) return apiBase
       }
     }
   } catch {
-    /* fall through */
+    /* continue discovery */
   }
 
-  // 3. adjacent-port probe
-  for (let p = 8081; p <= 8090; p++) {
+  for (let port = 8081; port <= 8090; port++) {
     try {
-      const probe = await fetch(`http://127.0.0.1:${p}/api/health`)
-      if (probe.ok) return `http://127.0.0.1:${p}`
+      const probe = await fetch(`http://127.0.0.1:${port}/api/health`)
+      if (probe.ok) return `http://127.0.0.1:${port}`
     } catch {
       /* keep probing */
     }
@@ -244,6 +257,16 @@ export interface QdsSignResponse {
   lambda: number
   theory_forgery_probability: number
   initial_verification_accepted: boolean
+  temporal?: TemporalBindingView | null
+}
+
+export interface TemporalBindingView {
+  window: number
+  unix_ms: number
+  entropy_prefix: string
+  chain_prefix: string
+  tag_prefix: string
+  valid_until_window: number
 }
 
 export interface VerificationReport {
@@ -252,8 +275,7 @@ export interface VerificationReport {
   match_ratio: number
   mismatches: number
   total_positions: number
-  /** False when rejection happened before statistics (replay/commitment
-   * check) — mismatches/match_ratio are then not measured evidence. */
+  /** False when rejection occurred before statistical evaluation. */
   evaluated?: boolean
   reason: string
 }
@@ -284,32 +306,101 @@ export interface ForgeryAnalysis {
   by_lambda: { lambda: number; theory: number }[]
 }
 
+export interface ConfidenceInterval {
+  n: number
+  k: number
+  p_hat: number
+  lo_hoeffding: number
+  hi_hoeffding: number
+  hi_chernoff: number
+  confidence: number
+}
+
+export interface ThresholdPoint {
+  n: number
+  threshold: number
+  slack: number
+}
+
+export interface VerdictConfidence {
+  n: number
+  k: number
+  threshold: number
+  p_value: number
+  rejection_confidence: number
+  band: 'airtight' | 'decisive' | 'significant' | 'undersized'
+}
+
+export interface BoundsReport {
+  interval: ConfidenceInterval
+  curve: ThresholdPoint[]
+  verdict: VerdictConfidence
+  chernoff_gain: number
+}
+
+export interface RingMember {
+  name: string
+  channel_noise: number
+  report: VerificationReport
+  accepted: boolean
+  transferable: boolean
+}
+
+export interface RingVerdict {
+  required: number
+  members_queried: number
+  accepted_count: number
+  transferable_count: number
+  quorum_ok: boolean
+  transfer_grade: boolean
+  members: RingMember[]
+  note: string
+}
+
 export const qdsApi = {
   setup: (qubitCount: number, lambda: number): Promise<QdsSetupResponse> =>
-    jsonFetch<QdsSetupResponse>('/api/qds/setup', {
-      qubit_count: qubitCount,
-      lambda,
-    }),
+    jsonFetch<QdsSetupResponse>('/api/qds/setup', { qubit_count: qubitCount, lambda }),
   sign: (message: string, seed?: number): Promise<QdsSignResponse> =>
     jsonFetch<QdsSignResponse>('/api/qds/sign', { message, seed }),
   verify: (message: string, signatureHex: string, nonce: number): Promise<QdsOutcome> =>
-    jsonFetch<QdsOutcome>('/api/qds/verify', {
-      message,
-      signature_hex: signatureHex,
-      nonce,
-    }),
+    jsonFetch<QdsOutcome>('/api/qds/verify', { message, signature_hex: signatureHex, nonce }),
   attacks: (tamperFraction?: number): Promise<QdsOutcome[]> => {
-    const q = tamperFraction !== undefined ? `?tamper_fraction=${tamperFraction}` : ''
-    return fetch(`${base()}/api/qds/attacks${q}`).then((r) => r.json())
+    const query = tamperFraction !== undefined ? `?tamper_fraction=${tamperFraction}` : ''
+    return fetch(`${base()}/api/qds/attacks${query}`).then((r) => r.json())
   },
   forgeryAnalysis: (): Promise<ForgeryAnalysis> =>
     fetch(`${base()}/api/qds/forgery-analysis`).then((r) => r.json()),
+  bounds: (k: number, n: number, threshold = 0.15, noise = 0.02, delta = 0.01): Promise<BoundsReport> => {
+    const query = new URLSearchParams({ k: String(k), n: String(n), threshold: String(threshold), noise: String(noise), delta: String(delta) })
+    return fetch(`${base()}/api/stats/bounds?${query}`).then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      return r.json()
+    })
+  },
+  consensusRing: (opts?: {
+    k?: number
+    m?: number
+    members?: string[]
+    attackedMember?: number | null
+    attackNoise?: number
+    tolerance?: number
+    seed?: number
+  }): Promise<RingVerdict> =>
+    jsonFetch<RingVerdict & { verdict: RingVerdict }>('/api/qds/consensus-ring', {
+      k: opts?.k,
+      m: opts?.m,
+      members: opts?.members,
+      attacked_member: opts?.attackedMember ?? null,
+      attack_noise: opts?.attackNoise,
+      tolerance: opts?.tolerance,
+      seed: opts?.seed,
+    }).then((response) => response.verdict),
   metrics: (trials?: number, seed?: number): Promise<MetricsReport> => {
     const params = new URLSearchParams()
     if (trials !== undefined) params.set('trials', String(trials))
     if (seed !== undefined) params.set('seed', String(seed))
-    const q = params.toString() ? `?${params.toString()}` : ''
-    return fetch(`${base()}/api/qds/metrics${q}`).then((r) => {
+    const query = params.toString() ? `?${params.toString()}` : ''
+    return fetch(`${base()}/api/qds/metrics${query}`).then((r) => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       return r.json()
     })
@@ -317,8 +408,6 @@ export const qdsApi = {
   events: (): Promise<{ events: QdsEventRow[] }> =>
     fetch(`${base()}/api/qds/events`).then((r) => r.json()),
 }
-
-// ---------------- Performance evaluation (Lap 2 deliverable) ----------------
 
 export interface ConfusionCounts {
   true_negatives: number
@@ -364,8 +453,6 @@ export interface MetricsReport {
   notes: string[]
 }
 
-// ---------------- Accounts (multi-user website) ----------------
-
 export interface AuthResponse {
   ok: boolean
   token: string | null
@@ -389,8 +476,6 @@ export const authApi = {
     fetch(`${base()}/api/auth/users`).then((r) => r.json()),
 }
 
-// ---------------- Document Vault (features 3 + 7) + Transfer Portal (4) + Audit (5) ----------------
-
 export interface SessionInfo {
   has_key: boolean
   key_commitment?: string
@@ -400,7 +485,6 @@ export interface SessionInfo {
 }
 
 export interface SealResponse {
-  /** The .qsig container as base64 (wire format for P2P send/receive). */
   container_b64: string
   name: string
   size: number
@@ -408,9 +492,7 @@ export interface SealResponse {
   key_commitment: string
   quorum: [number, number] | null
   officer_commitments: string[]
-  /** Provenance of the sealing key ("six-state-qds" | "qkd-legacy"). */
   key_source: string
-  /** Whether the teleport-QDS signature was attached and verified. */
   qds_signature: boolean
   audit_seq: number
   audit_root?: string
@@ -427,9 +509,8 @@ export interface VerificationOutcome {
   payloadScheme?: string
 }
 
-/** Mirrors the Rust `VerificationOutcome::passed()` (all four flags true). */
-export function isPassed(o: VerificationOutcome): boolean {
-  return o.format_ok && o.authentic && o.integrity && o.key_match
+export function isPassed(outcome: VerificationOutcome): boolean {
+  return outcome.format_ok && outcome.authentic && outcome.integrity && outcome.key_match
 }
 
 export interface VerifyResponse {
@@ -461,9 +542,7 @@ export interface QuorumInfo {
   threshold: number | null
   shares_total: number | null
   officers: OfficerShare[]
-  /** Present when the CALLER holds a distributed officer share. */
   held_share?: { x: number; commitment: string; from: string } | null
-  /** Cross-account pledges received by the caller (sealant side). */
   pledges_received?: number
   pledges?: string[]
 }
@@ -494,21 +573,24 @@ export interface InboxItem {
   container_b64?: string
   verified: boolean | null
   note: string | null
+  ring?: RingSpec | null
 }
 
-export interface InboxListResponse {
-  items: InboxItem[]
-  total: number
+export interface RingSpec {
+  k: number
+  m: number
+  members: string[]
+  attested_by: string[]
 }
+
+export interface InboxListResponse { items: InboxItem[]; total: number }
 
 export interface PeerSendResponse {
   delivered: boolean
-  /** Where the container went: "bob (local)" or the peer API base URL. */
   destination: string
   peer_item_id: number | null
   peer_note: string | null
   sha256: string
-  /** The sender's outbox record id (their copy of the sent container). */
   outbox_id: number
   audit_seq: number
   audit_warning?: string
@@ -565,32 +647,24 @@ export interface AuditEntry {
   detail: string
   payload_hash: string
   leaf_hash: string
+  hash_v?: number
 }
 
-export interface AuditEventsResponse {
+export interface AuditEventsResponse { entries: AuditEntry[]; root?: string; total: number }
+export interface InclusionProof { seq: number; leaf_hash: string; siblings: string[]; root: string }
+export interface ChainVerdict { ok: boolean; broken_at: number | null; root?: string | null; detail: string }
+export interface AuditExportResponse {
+  format_version: number
   entries: AuditEntry[]
-  root?: string
+  proofs: InclusionProof[]
+  root: string | null
   total: number
-}
-
-export interface InclusionProof {
-  seq: number
-  leaf_hash: string
-  siblings: string[]
-  root: string
-}
-
-export interface ChainVerdict {
-  ok: boolean
-  broken_at: number | null
-  root?: string
-  detail: string
+  chain: ChainVerdict
 }
 
 export interface AttackResponse {
   mode: string
   description: string
-  /** The mangled container Mallory would forward to Bob. */
   container_b64: string
   target_sha256: string
   expected_outcome: string
@@ -599,23 +673,18 @@ export interface AttackResponse {
 }
 
 export type AttackMode = 'tamper_bytes' | 'swap_meta' | 'reseal' | 'truncate'
-
 export interface OutboxItem {
   id: number
   sent_at: string
   to_peer: string
-  via: 'local' | 'laptop' | 'relay' | string
+  via: string
   meta: { name: string; size: number; mime: string; sha256: string; sealed_at: string }
   container_b64: string
   delivered: boolean
   claim_code?: string | null
   summary: string
 }
-
-export interface OutboxListResponse {
-  items: OutboxItem[]
-  total: number
-}
+export interface OutboxListResponse { items: OutboxItem[]; total: number }
 
 export interface QdsKeyResponse {
   key_commitment: string
@@ -629,7 +698,6 @@ export interface QdsKeyResponse {
   audit_seq: number
   audit_warning?: string
 }
-
 export interface QdsCheckReport {
   accepted: boolean
   verdict: string
@@ -639,7 +707,6 @@ export interface QdsCheckReport {
   evaluated?: boolean
   reason: string
 }
-
 export interface OpenResponse {
   content_b64: string
   name: string
@@ -652,7 +719,6 @@ export interface OpenResponse {
   audit_seq: number
   audit_warning?: string
 }
-
 export interface WireProof {
   doc_name: string
   doc_sha256: string
@@ -666,7 +732,6 @@ export interface WireProof {
   transport: string
   verdict: string
 }
-
 export interface TheaterStep {
   step: number
   title: string
@@ -675,7 +740,6 @@ export interface TheaterStep {
   level: string
   evidence: Record<string, unknown>
 }
-
 export interface TheaterResponse {
   theater_id: number
   mode: string
@@ -688,7 +752,6 @@ export interface TheaterResponse {
   audit_seq: number
   audit_warning?: string
 }
-
 export interface RelayDepositResponse {
   claim_code: string
   relay_note: string
@@ -696,7 +759,6 @@ export interface RelayDepositResponse {
   audit_seq: number
   audit_warning?: string
 }
-
 export interface RelayClaimResponse {
   accepted: boolean
   item_id: number | null
@@ -706,7 +768,6 @@ export interface RelayClaimResponse {
   audit_seq: number
   audit_warning?: string
 }
-
 export interface RelayDepositInfo {
   code: string
   from: string
@@ -719,15 +780,9 @@ export interface RelayDepositInfo {
 export const docApi = {
   session: (): Promise<SessionInfo> =>
     fetch(`${base()}/api/doc/session`, { headers: authHeaders() }).then((r) => r.json()),
-  /** Derive this user's sealing key from a fresh six-state QDS session. */
-  qdsKey: (): Promise<QdsKeyResponse> =>
-    jsonFetch<QdsKeyResponse>('/api/doc/qds/key', {}),
-  /** Unlock a sealed container and recover the ORIGINAL file bytes. */
-  open: (params: {
-    container_b64?: string
-    inbox_id?: number
-    outbox_id?: number
-  }): Promise<OpenResponse> => jsonFetch<OpenResponse>('/api/doc/open', params),
+  qdsKey: (): Promise<QdsKeyResponse> => jsonFetch<QdsKeyResponse>('/api/doc/qds/key', {}),
+  open: (params: { container_b64?: string; inbox_id?: number; outbox_id?: number }): Promise<OpenResponse> =>
+    jsonFetch<OpenResponse>('/api/doc/open', params),
   seal: (params: {
     name: string
     content_b64: string
@@ -743,23 +798,13 @@ export const docApi = {
   quorumDistribute: (users: string[]): Promise<DistributeResponse> =>
     jsonFetch<DistributeResponse>('/api/doc/quorum/distribute', { users }),
   quorumPledge: (): Promise<PledgeResponse> =>
-    fetch(`${base()}/api/doc/quorum/pledge`, {
-      method: 'POST',
-      headers: authHeaders(),
-    }).then((r) => {
+    fetch(`${base()}/api/doc/quorum/pledge`, { method: 'POST', headers: authHeaders() }).then((r) => {
       if (!r.ok) throw new Error(`pledge failed (HTTP ${r.status})`)
       return r.json()
     }),
-  attack: (params: {
-    container_b64: string
-    mode: AttackMode
-    from_label?: string
-  }): Promise<AttackResponse> => jsonFetch<AttackResponse>('/api/doc/attack', params),
-  quorumUnlock: (params: {
-    container_b64?: string
-    /** Omit (or pass []) for the cross-account pledged-unlock mode. */
-    shares?: { x: number; y: number[] }[]
-  }): Promise<QuorumUnlockResponse> =>
+  attack: (params: { container_b64: string; mode: AttackMode; from_label?: string }): Promise<AttackResponse> =>
+    jsonFetch<AttackResponse>('/api/doc/attack', params),
+  quorumUnlock: (params: { container_b64?: string; shares?: { x: number; y: number[] }[] }): Promise<QuorumUnlockResponse> =>
     jsonFetch<QuorumUnlockResponse>('/api/doc/quorum/unlock', {
       container_b64: params.container_b64,
       shares: params.shares ?? [],
@@ -778,9 +823,7 @@ export const docApi = {
     container_b64?: string
     name?: string
     content_b64?: string
-    /** Remote laptop API base (cross-machine delivery). */
     peer_url?: string
-    /** Recipient username on this server (local inbox delivery). */
     to_user?: string
     from_label?: string
   }): Promise<PeerSendResponse> => jsonFetch<PeerSendResponse>('/api/doc/send', params),
@@ -789,13 +832,9 @@ export const docApi = {
       if (!r.ok) throw new Error(`inbox requires login (HTTP ${r.status})`)
       return r.json()
     }),
-  inboxVerify: (id: number): Promise<VerifyResponse> =>
-    jsonFetch<VerifyResponse>('/api/doc/inbox/verify', { id }),
+  inboxVerify: (id: number): Promise<VerifyResponse> => jsonFetch<VerifyResponse>('/api/doc/inbox/verify', { id }),
   inboxDelete: (id: number): Promise<{ deleted: number }> =>
-    fetch(`${base()}/api/doc/inbox/${id}`, {
-      method: 'DELETE',
-      headers: authHeaders(),
-    }).then((r) => {
+    fetch(`${base()}/api/doc/inbox/${id}`, { method: 'DELETE', headers: authHeaders() }).then((r) => {
       if (!r.ok) throw new Error(`delete failed (HTTP ${r.status})`)
       return r.json()
     }),
@@ -804,51 +843,34 @@ export const docApi = {
       if (!r.ok) throw new Error(`outbox requires login (HTTP ${r.status})`)
       return r.json()
     }),
+  ringSend: (params: { container_b64: string; members: string[]; k?: number }): Promise<{ accepted: string[]; missing: string[]; k: number; m: number; note: string }> =>
+    jsonFetch('/api/doc/ring/send', params),
+  ringAttest: (member: string, inboxId: number): Promise<{ attested: boolean; verdict: string | null; reason: string | null; attested_count: number; k: number; m: number; quorum_ok: boolean; note: string }> =>
+    jsonFetch('/api/doc/ring/attest', { member, inbox_id: inboxId }),
   outboxDelete: (id: number): Promise<{ deleted: number }> =>
-    fetch(`${base()}/api/doc/outbox/${id}`, {
-      method: 'DELETE',
-      headers: authHeaders(),
-    }).then((r) => {
+    fetch(`${base()}/api/doc/outbox/${id}`, { method: 'DELETE', headers: authHeaders() }).then((r) => {
       if (!r.ok) throw new Error(`delete failed (HTTP ${r.status})`)
       return r.json()
     }),
   wireProof: (ref: { inbox_id?: number; outbox_id?: number }): Promise<WireProof> => {
-    const q = new URLSearchParams()
-    if (ref.inbox_id !== undefined) q.set('inbox_id', String(ref.inbox_id))
-    if (ref.outbox_id !== undefined) q.set('outbox_id', String(ref.outbox_id))
-    return fetch(`${base()}/api/doc/wire-proof?${q.toString()}`, { headers: authHeaders() }).then(
-      (r) => {
-        if (!r.ok) throw new Error(`wire proof failed (HTTP ${r.status})`)
-        return r.json()
-      },
-    )
+    const query = new URLSearchParams()
+    if (ref.inbox_id !== undefined) query.set('inbox_id', String(ref.inbox_id))
+    if (ref.outbox_id !== undefined) query.set('outbox_id', String(ref.outbox_id))
+    return fetch(`${base()}/api/doc/wire-proof?${query.toString()}`, { headers: authHeaders() }).then((r) => {
+      if (!r.ok) throw new Error(`wire proof failed (HTTP ${r.status})`)
+      return r.json()
+    })
   },
-  attackTheater: (params: {
-    container_b64: string
-    mode?: AttackMode
-    victim?: string
-    attacker?: string
-  }): Promise<TheaterResponse> => jsonFetch<TheaterResponse>('/api/doc/attack-theater', params),
-  relayDeposit: (params: {
-    container_b64: string
-    to_user: string
-    from_label?: string
-  }): Promise<RelayDepositResponse> => jsonFetch<RelayDepositResponse>('/api/doc/relay/deposit', params),
+  attackTheater: (params: { container_b64: string; mode?: AttackMode; victim?: string; attacker?: string }): Promise<TheaterResponse> =>
+    jsonFetch<TheaterResponse>('/api/doc/attack-theater', params),
+  relayDeposit: (params: { container_b64: string; to_user: string; from_label?: string }): Promise<RelayDepositResponse> =>
+    jsonFetch<RelayDepositResponse>('/api/doc/relay/deposit', params),
   relayClaim: (claim_code: string): Promise<RelayClaimResponse> =>
     jsonFetch<RelayClaimResponse>('/api/doc/relay/claim', { claim_code }),
   relayInbox: (): Promise<{ deposits: RelayDepositInfo[]; total: number }> =>
     fetch(`${base()}/api/doc/relay/inbox`, { headers: authHeaders() }).then((r) => r.json()),
 }
 
-export const auditClearApi = {
-  clear: (developerToken: string): Promise<{ cleared: boolean; genesis_seq: number }> =>
-    jsonFetch<{ cleared: boolean; genesis_seq: number }>('/api/audit/clear', {
-      developer_token: developerToken,
-      confirm: 'CLEAR',
-    }),
-}
-
-/** Base64 (standard alphabet, unpadded ok) ↔ Uint8Array helpers. */
 export function bytesToB64(bytes: Uint8Array): string {
   let bin = ''
   const chunk = 0x8000
@@ -866,15 +888,57 @@ export function b64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
 }
 
 export const auditApi = {
-  events: (limit = 100): Promise<AuditEventsResponse> =>
-    fetch(`${base()}/api/audit/events?limit=${limit}`).then((r) => r.json()),
-  root: (): Promise<{ root?: string; leaves: number }> =>
-    fetch(`${base()}/api/audit/root`).then((r) => r.json()),
-  proof: (seq: number): Promise<InclusionProof> =>
-    fetch(`${base()}/api/audit/proof?seq=${seq}`).then((r) => {
-      if (!r.ok) throw new Error(`no entry at seq ${seq}`)
-      return r.json()
-    }),
-  verifyChain: (): Promise<ChainVerdict> =>
-    fetch(`${base()}/api/audit/verify`).then((r) => r.json()),
+  events: (limit = 100): Promise<AuditEventsResponse> => fetch(`${base()}/api/audit/events?limit=${limit}`).then((r) => r.json()),
+  portableExport: async (): Promise<AuditExportResponse> => {
+    const response = await fetch(`${base()}/api/audit/export`)
+    if (!response.ok) {
+      const body = await response.json().catch(() => null)
+      throw new Error(body?.error ?? `audit export failed (HTTP ${response.status})`)
+    }
+    return response.json() as Promise<AuditExportResponse>
+  },
+  root: (): Promise<{ root?: string; leaves: number }> => fetch(`${base()}/api/audit/root`).then((r) => r.json()),
+  proof: (seq: number): Promise<InclusionProof> => fetch(`${base()}/api/audit/proof?seq=${seq}`).then((r) => {
+    if (!r.ok) throw new Error(`no entry at seq ${seq}`)
+    return r.json()
+  }),
+  verifyChain: (): Promise<ChainVerdict> => fetch(`${base()}/api/audit/verify`).then((r) => r.json()),
+}
+
+export type BlindTreatment = 'clear' | 'environmental_noise' | 'interception'
+export interface BlindChallengeMeasurement {
+  run_id: number
+  key_length: number
+  qber: number
+  dynamic_threshold: number
+  matching_bases_count: number
+  mismatches: number
+  channel_class: string
+  bell_test?: BellTestReport | null
+}
+export interface BlindChallengeStartResponse { challenge_id: string; commitment: string; measurement: BlindChallengeMeasurement }
+export interface BlindChallengeRevealResponse {
+  correct: boolean
+  guess: BlindTreatment
+  treatment: BlindTreatment
+  explanation: string
+  commitment: string
+  commitment_payload: string
+  noise_rate: number
+  intercept_ratio: number
+  seed: number
+  channel_class: string
+  measurement: BlindChallengeMeasurement
+}
+export const blindChallengeApi = {
+  start: async (): Promise<BlindChallengeStartResponse> => {
+    const response = await fetch(`${base()}/api/blind-challenge/start`, { method: 'POST' })
+    if (!response.ok) {
+      const body = await response.json().catch(() => null)
+      throw new Error(body?.error ?? `challenge failed (HTTP ${response.status})`)
+    }
+    return response.json() as Promise<BlindChallengeStartResponse>
+  },
+  reveal: (challenge_id: string, guess: BlindTreatment): Promise<BlindChallengeRevealResponse> =>
+    jsonFetch<BlindChallengeRevealResponse>('/api/blind-challenge/reveal', { challenge_id, guess }),
 }

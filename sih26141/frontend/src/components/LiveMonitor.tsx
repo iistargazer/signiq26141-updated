@@ -1,4 +1,4 @@
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from 'recharts'
+import { lazy, Suspense, useMemo } from 'react'
 import type { LiveScenario } from '../App'
 
 interface Props {
@@ -10,30 +10,37 @@ interface Props {
 }
 
 const SERIES: Record<string, { color: string; label: string }> = {
-  secure: { color: '#34d399', label: 'Secure channel' },
-  attack: { color: '#f87171', label: 'Attack (full intercept)' },
-  custom: { color: '#fbbf24', label: 'Custom ratio' },
+  secure: { color: '#86bf9c', label: 'Secure channel' },
+  attack: { color: '#d67f72', label: 'Attack (full intercept)' },
+  custom: { color: '#c9a45c', label: 'Custom ratio' },
 }
+
+type ChartPoint = { processed: number; [key: string]: number | undefined }
+
+const LiveChart = lazy(() => import('./Charts').then((module) => ({ default: module.LiveChart })))
 
 export function LiveMonitor({ live, log, running, baseThreshold }: Props) {
   const names = Object.keys(live)
-  if (names.length === 0) return null
-
-  const chartData: { processed: number; [k: string]: number | undefined }[] = []
-  const keys = names.filter((n) => live[n].points.length > 0)
-  const maxLen = Math.max(0, ...keys.map((n) => live[n].points.length))
-  for (let i = 0; i < maxLen; i++) {
-    const row: { processed: number; [k: string]: number | undefined } = { processed: i }
-    for (const n of keys) {
-      const p = live[n].points[i]
-      if (p) {
-        row[`${n}_qber`] = p.qber
-        row[`${n}_thr`] = p.threshold
-        row.processed = p.processed
+  const keys = useMemo(
+    () => names.filter((name) => live[name].points.length > 0),
+    [live],
+  )
+  const chartData = useMemo(() => {
+    const maxLen = Math.max(0, ...keys.map((name) => live[name].points.length))
+    return Array.from({ length: maxLen }, (_, index): ChartPoint => {
+      const row: ChartPoint = { processed: index }
+      for (const name of keys) {
+        const point = live[name].points[index]
+        if (!point) continue
+        row[`${name}_qber`] = point.qber
+        row[`${name}_thr`] = point.threshold
+        row.processed = point.processed
       }
-    }
-    chartData.push(row)
-  }
+      return row
+    })
+  }, [keys, live])
+
+  if (names.length === 0) return null
 
   return (
     <section className="panel">
@@ -45,7 +52,7 @@ export function LiveMonitor({ live, log, running, baseThreshold }: Props) {
         {keys.map((n) => {
           const s = live[n]
           const pct = s.total > 0 ? Math.round((s.processed / s.total) * 100) : 0
-          const meta = SERIES[n] ?? { color: '#60a5fa', label: n }
+          const meta = SERIES[n] ?? { color: '#8fb0c9', label: n }
           return (
             <div key={n} className="monitor-stats">
               <div className="stat-line">
@@ -82,57 +89,9 @@ export function LiveMonitor({ live, log, running, baseThreshold }: Props) {
         })}
       </div>
       <div className="chart-wrap">
-        <ResponsiveContainer width="100%" height={260}>
-          <LineChart data={chartData} margin={{ top: 10, right: 20, bottom: 0, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1f2a44" />
-            <XAxis dataKey="processed" stroke="#64748b" tick={{ fontSize: 11 }} />
-            <YAxis stroke="#64748b" tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`} />
-            <Tooltip
-              contentStyle={{ background: '#0d1526', border: '1px solid #1f2a44', borderRadius: 8, fontSize: 12 }}
-              formatter={(v) => `${((v as number) * 100).toFixed(3)}%`}
-              labelFormatter={(l) => `qubit #${l}`}
-            />
-            <Legend wrapperStyle={{ fontSize: 12 }} />
-            {keys.map((n) => {
-              const meta = SERIES[n] ?? { color: '#60a5fa', label: n }
-              return (
-                <Line
-                  key={n}
-                  type="monotone"
-                  dataKey={`${n}_qber`}
-                  name={`${meta.label} — QBER`}
-                  stroke={meta.color}
-                  dot={false}
-                  strokeWidth={2}
-                  isAnimationActive={false}
-                />
-              )
-            })}
-            {keys.map((n) => {
-              const meta = SERIES[n] ?? { color: '#60a5fa', label: n }
-              return (
-                <Line
-                  key={`${n}-thr`}
-                  type="monotone"
-                  dataKey={`${n}_thr`}
-                  name={`${meta.label} — threshold`}
-                  stroke={meta.color}
-                  strokeDasharray="6 4"
-                  strokeWidth={1}
-                  dot={false}
-                  isAnimationActive={false}
-                  legendType="none"
-                />
-              )
-            })}
-            <ReferenceLine
-              y={baseThreshold}
-              stroke="#475569"
-              strokeDasharray="2 2"
-              label={{ value: `base ${(baseThreshold * 100).toFixed(0)}%`, fill: '#475569', fontSize: 10, position: 'insideTopRight' }}
-            />
-          </LineChart>
-        </ResponsiveContainer>
+        <Suspense fallback={<div className="empty-state chart-loading" role="status">Loading live chart…</div>}>
+          <LiveChart data={chartData} keys={keys} baseThreshold={baseThreshold} />
+        </Suspense>
       </div>
       {log.length > 0 && (
         <div className="event-log">

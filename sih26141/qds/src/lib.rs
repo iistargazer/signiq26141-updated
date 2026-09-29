@@ -25,8 +25,15 @@ pub mod attacks;
 pub mod metrics;
 pub mod noisy;
 pub mod six_state;
+pub mod consensus;
+pub mod teleport;
+pub mod temporal;
 pub use attacks::{AttackAttempt, AttackKind};
 pub use six_state::{SixStateAttackKind, SixStateSignature, SixStateVerification};
+pub use teleport::{
+    teleport_state, Amplitude, BellState, PauliCorrection, StateVector, TeleportationRecord,
+    TeleportationResult,
+};
 
 // ---------------------------------------------------------------------------
 // Pauli algebra
@@ -125,20 +132,28 @@ pub struct TeleportResult {
 /// Teleport one classical-encoded qubit value `message_bit` to the holder of
 /// the Bell pair half.
 ///
-/// In the simulation the "quantum channel" is ideal, so teleportation
-/// transports the bit exactly; the Bell outcome is still random (Alice cannot
-/// choose it), which is precisely what makes the correction-bits sequence an
-/// unpredictable, verifiable signature.
-pub fn teleport_bit(message_bit: u8, pair: &BellPair, rng: &mut impl Rng) -> TeleportResult {
-    let outcome = pair.bell_measure(rng);
-    // Given the outcome, Bob's raw half is fixed by the entanglement
-    // correlations: applying the outcome's Pauli correction must yield the
-    // original state — that is the whole content of teleportation.
-    let pre = if outcome.correction().flips_bit() {
-        1 - message_bit
+/// This now runs the **genuine statevector engine** (`teleport::teleport_state`):
+/// a 3-qubit register with the message qubit prepared as |0⟩ or |1⟩, a real
+/// entangled |Φ⁺⟩ resource, CNOT+H Bell measurement, Born-rule projective
+/// measurement, and Bob's conditional Pauli correction. The Bell outcome is
+/// not drawn from a RNG directly — it emerges from the measurement statistics
+/// of the entangled register, which is the physics Deliverable 1 asks for.
+pub fn teleport_bit(message_bit: u8, _pair: &BellPair, rng: &mut impl Rng) -> TeleportResult {
+    let (alpha, beta) = if message_bit == 1 {
+        (Amplitude::ZERO, Amplitude::new(1.0, 0.0))
     } else {
-        message_bit
+        (Amplitude::new(1.0, 0.0), Amplitude::ZERO)
     };
+    let r = teleport_state(alpha, beta, rng);
+    let outcome = BellOutcome(match r.record.bell_state {
+        BellState::PhiPlus => 0,
+        BellState::PsiPlus => 1,
+        BellState::PhiMinus => 2,
+        BellState::PsiMinus => 3,
+    });
+    // Bob's raw bit BEFORE correction, read off the post-measurement
+    // statevector (Born-rule collapse already applied by the engine).
+    let pre = if r.record.bob_beta_pre.modulus_squared() > 0.5 { 1 } else { 0 };
     let corrected = apply_correction(pre, outcome.correction());
     debug_assert_eq!(
         corrected, message_bit,
@@ -185,6 +200,11 @@ pub struct QuantumPublicKey {
 /// bits per qubit) Alice obtained while teleporting H(m)-labeled qubits —
 /// i.e. exactly the "classical information" a teleportation-based QDS
 /// publishes, plus a Trent nonce binding it to this message instance.
+///
+/// The `temporal` field carries the Feature-2 **quantum-entropy timestamp**
+/// (sifting-window sequence number + hash-chain link + signature tag). A
+/// signature without it cannot verify — the replay trap treats a missing
+/// binding as a forgery-class signature.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QuantumSignature {
     /// Two correction bits per teleported qubit, flattened.
@@ -193,6 +213,11 @@ pub struct QuantumSignature {
     pub nonce: u64,
     /// Commitment mirror of the public key in force when signed.
     pub key_commitment: String,
+    /// Quantum-entropy timestamp binding (Feature 2 — temporal
+    /// non-repudiation). `None` only on old persisted signatures or forged
+    /// attempts; both fail verification.
+    #[serde(default)]
+    pub temporal: Option<temporal::TemporalBinding>,
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +251,21 @@ pub struct Trent {
     next_nonce: u64,
     /// Ledger of accepted signatures (message hash -> nonce), for audit.
     pub ledger: Vec<(String, u64)>,
+    /// The notary's **quantum clock**: the highest sifting window whose
+    /// signature has been accepted. The clock advances only on acceptance,
+    /// so a replayed past signature always lands behind it (Feature 2).
+    pub window: u64,
+    /// Every chain link this notary has minted, in mint order. Membership
+    /// in this history is what a timestamp must prove.
+    pub chain_history: Vec<String>,
+    /// Sifting windows consumed by accepted signatures — a window can be
+    /// filled only once, which is the replay check's sequence test.
+    pub consumed_windows: std::collections::HashSet<u64>,
+    /// Entropy hex of the CURRENT session's timestamp (set by `sign()`).
+    /// Re-bindings at the frontier window must reuse it so their recomputed
+    /// chain link equals the frontier link — and since the entropy came from
+    /// Bell outcomes, only the notary/session holder can mint such bindings.
+    frontier_entropy_hex: Option<String>,
 }
 
 impl Trent {
@@ -273,6 +313,10 @@ impl Trent {
             used_nonces: std::collections::HashSet::new(),
             next_nonce: 1,
             ledger: Vec::new(),
+            window: 0,
+            chain_history: vec![temporal::GENESIS_LINK.to_string()],
+            consumed_windows: std::collections::HashSet::new(),
+            frontier_entropy_hex: None,
         }
     }
 
@@ -287,6 +331,53 @@ impl Trent {
         n
     }
 
+    /// Mint a temporal binding for `correction_bits` at the CURRENT sifting
+    /// window without advancing the clock or extending the chain. This is the
+    /// honest noisy-signer path: the session's quantum timestamp already
+    /// exists (minted at `sign()`), and the bits as *received* over a noisy
+    /// channel are what get bound for statistical evaluation. Only a holder
+    /// of the session entropy (the signer/notary) can mint — the tag covers
+    /// the secret `entropy_hex`, so attackers cannot forge bindings.
+    pub fn mint_temporal_for(&self, correction_bits: &[u8], nonce: u64) -> temporal::TemporalBinding {
+        // A binding AT the frontier window extends the link BEFORE the
+        // frontier (the frontier link itself was minted over that same
+        // predecessor), so the recomputed link equals the frontier link and
+        // the binding verifies as locally minted.
+        let prev_chain = if self.chain_history.len() >= 2 {
+            self.chain_history[self.chain_history.len() - 2].clone()
+        } else {
+            temporal::GENESIS_LINK.to_string()
+        };
+        // Reuse the frontier session's Bell-derived entropy when there is
+        // one: the recomputed link then EQUALS the frontier link (chain is a
+        // deterministic function of prev, window, entropy), so the binding
+        // verifies as locally minted. Without a minted session the binding
+        // carries table-derived entropy and will (correctly) fail the
+        // chain check — nothing was ever signed to bind to.
+        let entropy = self.frontier_entropy_hex.clone().unwrap_or_else(|| {
+            let mut h = Sha256::new();
+            for row in self.primary.iter().flat_map(|r| r.iter()) {
+                h.update([*row]);
+            }
+            h.update(self.window.to_le_bytes());
+            hex::encode(h.finalize())
+        });
+        let ts = temporal::QuantumTimestamp {
+            window: self.window,
+            unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+            entropy_hex: entropy,
+            // The link recomputed over (prev, window, entropy) — the same
+            // structural relation `trap_check` verifies.
+            chain_hex: String::new(),
+        };
+        let mut ts = ts;
+        ts.chain_hex = temporal::expected_chain_link(&prev_chain, &ts);
+        temporal::bind_signature(ts, &prev_chain, correction_bits, nonce, &self.key.correlation_commitment)
+    }
+
     /// Secret correlation tables handed to Alice during signing (realized
     /// through her Bell-pair measurements), bound to the session nonce.
     pub fn signing_material(&self) -> SigningMaterial {
@@ -299,6 +390,93 @@ impl Trent {
     /// Verification tables (Trent-side; Bob only receives the verdict).
     pub fn verification_tables(&self) -> (&Vec<Vec<u8>>, &Vec<Vec<u8>>) {
         (&self.primary, &self.secondary)
+    }
+
+    /// Capture the current replay-trap state.
+    pub fn replay_snapshot(&self) -> ReplayStateSnapshot {
+        ReplayStateSnapshot {
+            used_nonces: self.used_nonces.iter().copied().collect(),
+            consumed_windows: self.consumed_windows.iter().copied().collect(),
+            chain_history: self.chain_history.clone(),
+            window: self.window,
+            next_nonce: self.next_nonce,
+            frontier_entropy_hex: self.frontier_entropy_hex.clone(),
+            ledger: self.ledger.clone(),
+        }
+    }
+
+    /// Restore replay-trap state captured by `replay_snapshot` (e.g. at
+    /// server boot). Only meaningful for a Trent built with the SAME seed
+    /// (the correlation tables must match the ledger being restored).
+    pub fn replay_restore(&mut self, snap: &ReplayStateSnapshot) {
+        self.used_nonces = snap.used_nonces.iter().copied().collect();
+        self.consumed_windows = snap.consumed_windows.iter().copied().collect();
+        self.chain_history = snap.chain_history.clone();
+        self.window = snap.window;
+        self.next_nonce = snap.next_nonce;
+        self.frontier_entropy_hex = snap.frontier_entropy_hex.clone();
+        self.ledger = snap.ledger.clone();
+    }
+}
+
+/// Persistable replay-trap state: everything the anti-replay machinery
+/// has *consumed or minted* since setup. Persist this across restarts and
+/// a rebooted verifier keeps its memory — without it, a restart would
+/// re-arm every captured signature (the last theoretical replay window).
+/// Does NOT include the secret tables: those are already pinned by
+/// TRENT_SEED, and duplicating them here would put a second copy of key
+/// material on disk.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ReplayStateSnapshot {
+    /// Nonces consumed by accepted signatures.
+    pub used_nonces: Vec<u64>,
+    /// Sifting windows consumed by accepted signatures.
+    pub consumed_windows: Vec<u64>,
+    /// The full minted chain, in mint order (index = window).
+    pub chain_history: Vec<String>,
+    /// The notary's current clock (frontier window).
+    pub window: u64,
+    /// Next nonce to issue.
+    pub next_nonce: u64,
+    /// Current session's entropy hex (for re-bindings at the frontier).
+    pub frontier_entropy_hex: Option<String>,
+    /// Accepted-signature ledger entries (message hash, nonce).
+    pub ledger: Vec<(String, u64)>,
+}
+
+#[cfg(test)]
+mod replay_state_tests {
+    use super::*;
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+
+    /// A restart with restore must keep the trap armed: the pre-restart
+    /// replay is still caught, and fresh sessions continue from the restored
+    /// clock instead of rewinding to window 1.
+    #[test]
+    fn replay_state_survives_restart() {
+        let mut rng = StdRng::seed_from_u64(3001);
+        let mut trent = Trent::setup(8, 2, &mut rng);
+        let (sig1, _) = sign(b"first document", &mut trent, &mut rng);
+        assert!(verify(b"first document", &sig1, &mut trent, 0.0).accepted);
+        let snap = trent.replay_snapshot();
+
+        // "Restart": rebuild from the same seed, restore the snapshot.
+        let mut trent2 = Trent::setup(8, 2, &mut StdRng::seed_from_u64(3001));
+        assert_eq!(trent2.window, 0, "fresh notary starts at window 0");
+        trent2.replay_restore(&snap);
+        assert_eq!(trent2.window, 1, "clock restored");
+
+        // The pre-restart replay is STILL caught (the whole point).
+        let replay = crate::attacks::attempt_replay(&sig1, b"first document");
+        let r = verify(b"first document", &replay.signature, &mut trent2, 0.0);
+        assert!(!r.accepted, "restart must not re-arm replayed signatures");
+        assert!(r.reason.contains("replay") || r.reason.contains("sequence"), "{}", r.reason);
+
+        // New sessions continue from the restored frontier.
+        let (sig2, _) = sign(b"second document", &mut trent2, &mut rng);
+        assert_eq!(sig2.temporal.as_ref().expect("binding").issued.window, 2);
+        assert!(verify(b"second document", &sig2, &mut trent2, 0.0).accepted);
     }
 }
 
@@ -358,11 +536,30 @@ pub fn sign(
         }
     }
 
+    // Feature 2 — mint the quantum-entropy timestamp from the Bell outcomes
+    // just measured (they did not exist before Alice's measurements), chained
+    // onto the notary's history. The clock advances once per signing session.
+    let bell_entropy: Vec<u8> = teleports.iter().map(|t| t.outcome.0).collect();
+    let window = trent.window + 1;
+    let prev_chain = trent
+        .chain_history
+        .last()
+        .cloned()
+        .unwrap_or_else(|| temporal::GENESIS_LINK.to_string());
+    let commitment = trent.public_key().correlation_commitment.clone();
+    let ts = temporal::mint_timestamp(window, &bell_entropy, &prev_chain);
+    trent.frontier_entropy_hex = Some(ts.entropy_hex.clone());
+    let binding =
+        temporal::bind_signature(ts, &prev_chain, &correction_bits, nonce, &commitment);
+    trent.chain_history.push(binding.issued.chain_hex.clone());
+    trent.window = window;
+
     (
         QuantumSignature {
             correction_bits,
             nonce,
-            key_commitment: trent.public_key().correlation_commitment.clone(),
+            key_commitment: commitment,
+            temporal: Some(binding),
         },
         teleports,
     )
@@ -497,6 +694,40 @@ pub fn verify(
             reason: "key commitment mismatch: signature not made under this key",
         };
     }
+    // ---- temporal trap (Feature 2: replay + non-repudiation) --------------
+    // Runs before the nonce registry: the sifting-window sequence check is
+    // the primary replay defense; the nonce is the second layer.
+    let temporal_reject: Option<&'static str> = match &signature.temporal {
+        None => Some(
+            "temporal binding missing — signature predates the quantum-timestamp trap (treated as forged)",
+        ),
+        Some(binding) => {
+            match temporal::trap_check(
+                binding,
+                &signature.correction_bits,
+                signature.nonce,
+                &signature.key_commitment,
+                &trent.chain_history,
+                Some(&trent.consumed_windows),
+                trent.window,
+            ) {
+                Ok(()) => None,
+                Err(trap) => Some(trap.explanation()),
+            }
+        }
+    };
+    if let Some(reason) = temporal_reject {
+        return VerificationReport {
+            accepted: false,
+            verdict: Verdict::Rej,
+            match_ratio: 0.0,
+            mismatches: 0,
+            total_positions,
+            evaluated: false,
+            reason,
+        };
+    }
+
     // ---- replay defense ----------------------------------------------------
     if trent.used_nonces.contains(&signature.nonce) {
         return VerificationReport {
@@ -555,7 +786,12 @@ pub fn verify(
 
     if accepted {
         // Consume the nonce only on success — a failed attempt leaves the
-        // nonce usable so a delayed genuine signature still verifies.
+        // nonce usable so a delayed genuine signature still verifies. The
+        // sifting window is likewise consumed exactly once (Feature 2's
+        // sequence slot); a replay of this signature dies on both layers.
+        if let Some(binding) = &signature.temporal {
+            trent.consumed_windows.insert(binding.issued.window);
+        }
         trent.used_nonces.insert(signature.nonce);
         trent.ledger.push((
             {
@@ -626,6 +862,44 @@ pub fn verify_transferability(
         };
     }
 
+    // ---- temporal trap (Feature 2), side-effect-free transferability form.
+    // NOTE: no freshness horizon here — a transferability check must pass
+    // for LONG-LIVED artifacts (a sealed document's embedded signature is
+    // re-verified every time the document is opened; that repeatability IS
+    // non-repudiation). The wire-freshness rule lives only in `verify()`.
+    // Tag + chain integrity still gate: transplant and forged timestamps
+    // remain fatal. Callers that need the strict bearer semantics run the
+    // full `trap_check` themselves (see server `verify_document_qds`).
+    let temporal_reject: Option<&'static str> = match &signature.temporal {
+        None => Some(
+            "temporal binding missing — signature predates the quantum-timestamp trap (treated as forged)",
+        ),
+        Some(binding) => {
+            match temporal::trap_check_document(
+                binding,
+                &signature.correction_bits,
+                signature.nonce,
+                &signature.key_commitment,
+                &trent.chain_history,
+                trent.window,
+            ) {
+                Ok(()) => None,
+                Err(trap) => Some(trap.explanation()),
+            }
+        }
+    };
+    if let Some(reason) = temporal_reject {
+        return VerificationReport {
+            accepted: false,
+            verdict: Verdict::Rej,
+            match_ratio: 0.0,
+            mismatches: 0,
+            total_positions,
+            evaluated: false,
+            reason,
+        };
+    }
+
     let (table_a1, table_a2) = trent.verification_tables();
     let msg_bits = message_qubits(message, qubit_count);
     let mut mismatches = 0usize;
@@ -683,12 +957,25 @@ pub fn estimate_forgery_probability(
     let mut successes = 0usize;
     for _ in 0..trials {
         let mut t = Trent::setup(qubit_count, lambda, rng);
+        // Mint a real session first: the harness then acts as the honest
+        // noisy-signer holding the frontier session's entropy, binding its
+        // GUESSED bits for statistical evaluation — isolating the (1/4)^n
+        // statistics layer, which is what the theory bound describes. The
+        // end-to-end forgery probability is this conditional rate TIMES the
+        // probability of forging the binding itself, which is negligible
+        // without the notary's secret tables (the tag covers the Bell-
+        // derived session entropy), so the true figure is far smaller.
+        let _genuine = sign(b"target message", &mut t, rng);
+        let bits: Vec<u8> = (0..qubit_count * lambda * 2)
+            .map(|_| rng.gen_bool(0.5) as u8)
+            .collect();
+        let nonce = t.issue_nonce();
+        let binding = t.mint_temporal_for(&bits, nonce);
         let forged = QuantumSignature {
-            correction_bits: (0..qubit_count * lambda * 2)
-                .map(|_| rng.gen_bool(0.5) as u8)
-                .collect(),
-            nonce: t.issue_nonce(),
+            correction_bits: bits,
+            nonce,
             key_commitment: t.public_key().correlation_commitment.clone(),
+            temporal: Some(binding),
         };
         let report = verify(b"target message", &forged, &mut t, 0.0);
         if report.accepted {

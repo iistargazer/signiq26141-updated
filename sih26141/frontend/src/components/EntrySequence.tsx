@@ -15,7 +15,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
  * sessionStorage keeps it to once per tab session.
  */
 
-const SEEN_KEY = 'signiq.entry.v4'
+const SEEN_KEY = 'signiq.entry.v6'
 
 /** Bumped whenever the intro changes so returning visitors see it once
  *  again; App.tsx also reads this to know when to mount the backdrop. */
@@ -134,7 +134,7 @@ export function EntrySequence({
 
       <div className={`entry2-mark ${phase === 'revealed' ? 'entry2-mark-in' : ''}`} aria-hidden>
         <span className="entry2-name">SigniQ</span>
-        <span className="entry2-tag">quantum-secured documents · team prometheus</span>
+        <span className="entry2-tag">quantum-secured document signatures</span>
       </div>
 
       <span className="entry2-skip">measure to enter</span>
@@ -183,8 +183,8 @@ function QubitSphere({ phase }: { phase: Phase }) {
       return s
     }
     const sprites: Record<string, HTMLCanvasElement> = {
-      gold: spriteFor('217, 168, 81'),
-      verdigris: spriteFor('143, 199, 168'),
+      gold: spriteFor('201, 164, 92'),
+      silver: spriteFor('143, 176, 201'),
     }
 
     // 24 qubits on randomized 3D orbits around the sphere.
@@ -193,18 +193,44 @@ function QubitSphere({ phase }: { phase: Phase }) {
       phi: Math.acos(2 * Math.random() - 1),
       speed: 0.2 + Math.random() * 0.5,
       r: 3 + Math.random() * 5,
-      tone: Math.random() < 0.75 ? 'gold' : 'verdigris',
+      tone: Math.random() < 0.7 ? 'gold' : 'silver',
     }))
 
+    const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)')
+    let reducedMotion = motionPreference.matches
     let raf = 0
+    let timer: number | null = null
+    let lastDraw = 0
     let t = 0
 
-    const draw = () => {
-      t += 0.016
+    const cancelDraw = () => {
+      if (timer !== null) window.clearTimeout(timer)
+      if (raf) cancelAnimationFrame(raf)
+      timer = null
+      raf = 0
+    }
+    const scheduleDraw = () => {
+      if (reducedMotion || document.hidden || raf || timer !== null || phase === 'revealed') return
+      timer = window.setTimeout(() => {
+        timer = null
+        raf = requestAnimationFrame(draw)
+      }, 42)
+    }
+
+    const draw = (now: number) => {
+      raf = 0
+      if (document.hidden) return
+      if (!reducedMotion && now - lastDraw < 42) {
+        scheduleDraw()
+        return
+      }
+      const dt = lastDraw ? Math.min((now - lastDraw) / 16.7, 3) : 1
+      lastDraw = now
+      t += 0.016 * dt
       ctx.clearRect(0, 0, size, size)
 
       // wireframe sphere: 3 ellipses (equator + two meridians) + rim
-      ctx.strokeStyle = 'rgba(217, 168, 81, 0.16)'
+      ctx.strokeStyle = 'rgba(201, 164, 92, 0.2)'
       ctx.lineWidth = 1
       ctx.beginPath()
       ctx.arc(cx, cy, R, 0, Math.PI * 2)
@@ -220,12 +246,12 @@ function QubitSphere({ phase }: { phase: Phase }) {
       }
       // state axis |0⟩..|1⟩
       ctx.setLineDash([])
-      ctx.strokeStyle = 'rgba(143, 199, 168, 0.32)'
+      ctx.strokeStyle = 'rgba(143, 176, 201, 0.38)'
       ctx.beginPath()
       ctx.moveTo(cx, cy - R * 1.18)
       ctx.lineTo(cx, cy + R * 1.18)
       ctx.stroke()
-      ctx.fillStyle = 'rgba(143, 199, 168, 0.55)'
+      ctx.fillStyle = 'rgba(143, 176, 201, 0.62)'
       ctx.font = '10px JetBrains Mono, monospace'
       ctx.textAlign = 'center'
       ctx.fillText('|0⟩', cx, cy - R * 1.18 - 8)
@@ -233,8 +259,10 @@ function QubitSphere({ phase }: { phase: Phase }) {
 
       // qubits: project 3D orbit to 2D, depth-sort by z for size/alpha
       const pts = qubits.map((q) => {
-        q.theta += 0.004 * q.speed
-        q.phi += 0.002 * q.speed
+        if (!reducedMotion) {
+          q.theta += 0.004 * q.speed * dt
+          q.phi += 0.002 * q.speed * dt
+        }
         const x3 = R * 1.12 * Math.sin(q.phi) * Math.cos(q.theta)
         const y3 = R * 1.12 * Math.cos(q.phi)
         const z3 = R * 1.12 * Math.sin(q.phi) * Math.sin(q.theta)
@@ -245,7 +273,7 @@ function QubitSphere({ phase }: { phase: Phase }) {
         const depth = (p.z / (R * 1.12) + 1) / 2 // 0 back → 1 front
         const alpha = 0.15 + depth * 0.6
         const radius = p.q.r * (0.5 + depth * 0.9)
-        const spr = sprites[p.q.tone]
+        const spr = sprites[p.q.tone] ?? sprites.gold
         const glow = radius * 2.6
         ctx.globalAlpha = Math.min(1, alpha * 1.15)
         ctx.drawImage(spr, p.x - glow, p.y - glow, glow * 2, glow * 2)
@@ -255,19 +283,48 @@ function QubitSphere({ phase }: { phase: Phase }) {
       // collapse: qubits rapidly fall toward the |1⟩ pole
       if (phase !== 'superposition') {
         for (const q of qubits) {
-          q.phi += (Math.PI - q.phi) * 0.14
-          q.theta += 0.06
-          q.r *= 0.94
+          q.phi += (Math.PI - q.phi) * (reducedMotion ? 1 : 0.14 * dt)
+          q.theta += reducedMotion ? 0 : 0.06 * dt
+          q.r = reducedMotion ? 0.8 : q.r * Math.pow(0.94, dt)
         }
       }
 
       // Once revealed the sphere is animating out — stop the loop instead
       // of burning frames on an invisible canvas.
-      if (phase === 'revealed') return
-      raf = requestAnimationFrame(draw)
+      if (phase !== 'revealed' && !reducedMotion) scheduleDraw()
     }
-    raf = requestAnimationFrame(draw)
-    return () => cancelAnimationFrame(raf)
+
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        cancelDraw()
+      } else if (reducedMotion) {
+        lastDraw = 0
+        draw(performance.now())
+      } else {
+        scheduleDraw()
+      }
+    }
+    const onMotionPreferenceChange = (event: MediaQueryListEvent) => {
+      reducedMotion = event.matches
+      cancelDraw()
+      if (document.hidden) return
+      if (reducedMotion) {
+        lastDraw = 0
+        draw(performance.now())
+      } else {
+        scheduleDraw()
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    motionPreference.addEventListener('change', onMotionPreferenceChange)
+    if (reducedMotion) draw(performance.now())
+    else scheduleDraw()
+    return () => {
+      cancelDraw()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      motionPreference.removeEventListener('change', onMotionPreferenceChange)
+    }
   }, [phase])
 
   return <canvas ref={ref} className="entry2-sphere" aria-hidden />
@@ -287,12 +344,22 @@ function InterferenceCanvas({ phase }: { phase: Phase }) {
     if (!canvas) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.5)
-    const w = (canvas.width = Math.round(window.innerWidth * dpr))
-    const h = (canvas.height = Math.round(window.innerHeight * dpr))
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    // Soft-focus background texture: CSS pixels are plenty (no device-pixel
+    // tax on a 4K screen) and the pattern is meant to blur anyway.
+    const vw = window.innerWidth || 0
+    const vh = window.innerHeight || 0
+    // Render this atmospheric effect at half resolution: the Gaussian
+    // fringes are soft by design, so a full-DPR image only adds CPU cost.
+    // A zero-size viewport must not crash the rest of the React tree.
+    if (vw < 2 || vh < 2) return
+    const scale = 2
+    const w = (canvas.width = Math.max(1, Math.ceil(vw / scale)))
+    const h = (canvas.height = Math.max(1, Math.ceil(vh / scale)))
+    canvas.style.width = '100%'
+    canvas.style.height = '100%'
 
     // draw once: two coherent sources + their interference fringes
+    try {
     const s1 = { x: w * 0.38, y: h * 0.42 }
     const s2 = { x: w * 0.62, y: h * 0.58 }
     const img = ctx.createImageData(w, h)
@@ -301,19 +368,22 @@ function InterferenceCanvas({ phase }: { phase: Phase }) {
       for (let x = 0; x < w; x += 1) {
         const d1 = Math.hypot(x - s1.x, y - s1.y)
         const d2 = Math.hypot(x - s2.x, y - s2.y)
-        const interference = Math.cos((d1 - d2) * 0.055)
+        const interference = Math.cos((d1 - d2) * 0.11)
         const envelope = Math.exp(-((x - w / 2) ** 2 + (y - h / 2) ** 2) / (2 * (w / 3) ** 2))
         const v = Math.max(0, interference) * envelope
         if (v > 0.04) {
           const i = (y * w + x) * 4
-          d[i] = 217 * v
-          d[i + 1] = 168 * v
-          d[i + 2] = 81 * v
-          d[i + 3] = 46 * v
+          d[i] = 201 * v
+          d[i + 1] = 164 * v
+          d[i + 2] = 92 * v
+          d[i + 3] = 40 * v
         }
       }
     }
     ctx.putImageData(img, 0, 0)
+    } catch {
+      /* pattern is decorative — never let it take the app down */
+    }
   }, [])
 
   return <canvas ref={ref} className={`entry2-fringes ${phase !== 'superposition' ? 'entry2-fringes-out' : ''}`} aria-hidden />

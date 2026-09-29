@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { bytesToB64, docApi, type DocEvent, type TransferResponse, type HopStats } from '../api'
+import { sliderFillStyle } from '../sliderFill'
 
 interface LogLine {
   id: number
@@ -118,7 +119,7 @@ export function TransferPortal({ onLog }: { onLog: (line: string) => void }) {
   return (
     <section className="panel">
       <div className="panel-title-row">
-        <div className="panel-title">P2P Transfer Portal — Alice → Relays → Bob</div>
+        <div className="panel-title">Channel transfer simulation</div>
         {busy && <span className="pulse-dot" aria-label="transferring" />}
       </div>
 
@@ -144,7 +145,7 @@ export function TransferPortal({ onLog }: { onLog: (line: string) => void }) {
           <span>
             Relay hops <b>{hops}</b>
           </span>
-          <input type="range" min={0} max={4} step={1} value={hops} onChange={(e) => setHops(Number(e.target.value))} />
+          <input type="range" min={0} max={4} step={1} value={hops} style={sliderFillStyle(0, 4, hops)} onChange={(e) => setHops(Number(e.target.value))} />
         </label>
         <label className="control">
           <span>
@@ -156,6 +157,7 @@ export function TransferPortal({ onLog }: { onLog: (line: string) => void }) {
             max={0.2}
             step={0.01}
             value={noise}
+            style={sliderFillStyle(0, 0.2, noise)}
             onChange={(e) => setNoise(Number(e.target.value))}
           />
         </label>
@@ -174,6 +176,7 @@ export function TransferPortal({ onLog }: { onLog: (line: string) => void }) {
               max={1}
               step={0.05}
               value={eveRatio}
+              style={sliderFillStyle(0.05, 1, eveRatio)}
               onChange={(e) => setEveRatio(Number(e.target.value))}
             />
           </label>
@@ -184,7 +187,7 @@ export function TransferPortal({ onLog }: { onLog: (line: string) => void }) {
       </div>
 
       <div className="topology" aria-hidden>
-        {['Alice', ...Array.from({ length: hops }, (_, i) => `Relay ${i + 1}`), 'Bob'].map((n, i, arr) => (
+        {['Sender', ...Array.from({ length: hops }, (_, i) => `Relay ${i + 1}`), 'Recipient'].map((n, i, arr) => (
           <span key={n} className="topology-item">
             <span className={`topology-node ${busy ? 'topology-live' : ''}`}>{n}</span>
             {i < arr.length - 1 && <span className="topology-link" />}

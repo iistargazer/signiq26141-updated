@@ -79,6 +79,9 @@ fn channel_tampering_is_detected_proportionally() {
         attempt_channel_tampering(&sig, 0.5, MESSAGE, &trent, &mut rng);
     let mut sig = attempt.signature.clone();
     sig.nonce = trent.issue_nonce(); // tamper flow uses its own fresh nonce
+    // The received bits are bound with the session's temporal tag — this is
+    // the honest noisy-signer path (only the session holder can mint it).
+    sig.temporal = Some(trent.mint_temporal_for(&sig.correction_bits, sig.nonce));
     let report = verify(MESSAGE, &sig, &mut trent, 0.0);
     assert!(!report.accepted, "50% channel tampering must be rejected");
     assert!(report.mismatches > 0, "tampering must produce mismatches");
@@ -134,6 +137,10 @@ fn forged_signature_in_gray_zone_yields_0acc_not_rej_boundary() {
     for b in sig.correction_bits.iter_mut().take(4) {
         *b ^= 1;
     }
+    // Re-mint the binding over the flipped bits (honest noisy-signer path —
+    // the test acts as the session holder evaluating received bits).
+    let nonce = sig.nonce;
+    sig.temporal = Some(trent.mint_temporal_for(&sig.correction_bits, nonce));
     let report = verify(MESSAGE, &sig, &mut trent, 0.10);
     assert_eq!(report.verdict, Verdict::Acc0, "few mismatches => 0-ACC gray zone");
     assert!(report.accepted, "0-ACC is still locally accepted");
@@ -171,7 +178,11 @@ fn channel_tampering_scales_with_fraction() {
             attempt_channel_tampering(&genuine_sig, fraction, MESSAGE, &trent, &mut rng);
         let mut sig = attempt.signature;
         sig.nonce = trent.issue_nonce();
-        verify(MESSAGE, &sig, &mut trent, 0.10).mismatches
+        sig.temporal = Some(trent.mint_temporal_for(&sig.correction_bits, sig.nonce));
+        // Count via the side-effect-free transferability check: a gray-zone
+        // accept in the full verify would consume the sifting window and
+        // mask the second measurement.
+        verify_transferability(MESSAGE, &sig, &mut trent, 0.10).mismatches
     };
     let mild = count_mismatches(0.1);
     let heavy = count_mismatches(0.9);

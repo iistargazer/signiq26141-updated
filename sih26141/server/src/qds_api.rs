@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use qds::attacks::{
     attempt_channel_tampering, attempt_forgery, attempt_impersonation, attempt_replay,
-    attempt_unauthorized_verification,
+    attempt_timestamp_forgery, attempt_unauthorized_verification,
 };
 
 /// Wrapper stored in AppState (avoids generic-state plumbing in handlers).
@@ -113,6 +113,22 @@ pub struct QdsSignResponse {
     /// Result of Bob's initial verification at delivery time. The nonce is
     /// consumed by this acceptance, so any re-presentation later is a replay.
     pub initial_verification_accepted: bool,
+    /// The signature's quantum-entropy timestamp binding (Feature 2), for
+    /// dashboard display: window number, chain-link and tag prefixes.
+    pub temporal: Option<TemporalBindingView>,
+}
+
+/// A display-friendly view of the temporal binding (no secrets — the tag
+/// and chain are public commitments; prefixes only, to keep the payload
+/// light while remaining verifiable-looking).
+#[derive(Debug, Clone, Serialize)]
+pub struct TemporalBindingView {
+    pub window: u64,
+    pub unix_ms: u64,
+    pub entropy_prefix: String,
+    pub chain_prefix: String,
+    pub tag_prefix: String,
+    pub valid_until_window: u64,
 }
 
 pub async fn qds_sign(
@@ -175,8 +191,23 @@ pub async fn qds_sign(
         &sig_for_verify,
         "Bob's initial verification of the delivered signature.".into(),
     );
+    // Signing advanced the notary's quantum clock (window N minted) and the
+    // acceptance consumed it — persist the replay-trap memory.
+    holder.inner.persist_replay_state();
 
     *holder.last_signature.lock().unwrap() = Some((sig, teleports, req.message.clone()));
+
+    let temporal_view = sig_for_verify
+        .temporal
+        .as_ref()
+        .map(|b| TemporalBindingView {
+            window: b.issued.window,
+            unix_ms: b.issued.unix_ms,
+            entropy_prefix: b.issued.entropy_hex.chars().take(12).collect(),
+            chain_prefix: b.issued.chain_hex.chars().take(12).collect(),
+            tag_prefix: b.signature_tag_hex.chars().take(12).collect(),
+            valid_until_window: b.valid_until_window,
+        });
 
     Ok(Json(QdsSignResponse {
         nonce,
@@ -186,6 +217,7 @@ pub async fn qds_sign(
         lambda,
         theory_forgery_probability: theory,
         initial_verification_accepted: initial.report.accepted,
+        temporal: temporal_view,
     }))
 }
 
@@ -211,6 +243,10 @@ pub async fn qds_verify(
         correction_bits: bits,
         nonce: req.nonce,
         key_commitment: commitment,
+        // Manual submissions carry no temporal binding — the trap classifies
+        // them as pre-trap signatures and rejects. (The UI's genuine path
+        // goes through /api/qds/sign, which mints a full binding.)
+        temporal: None,
     };
     let holder = state.qds.lock().unwrap();
     Ok(Json(run_verify(
@@ -281,10 +317,20 @@ pub async fn qds_attacks(
         outcomes.push(run_attack(&holder.inner, impersonation, target));
         outcomes.push(run_attack(&holder.inner, replay, message_bytes));
 
-        // Channel tampering: genuine correction bits, disturbed channel — use
-        // a fresh nonce so the nonce check isn't the reason for rejection.
+        // Channel tampering: genuine correction bits, disturbed channel — a
+        // fresh SESSION (advancing the notary's quantum clock to an
+        // unconsumed window) plus a notary re-binding of the RECEIVED bits
+        // (the honest noisy-delivery path) so the run demonstrates the
+        // proportional measurement statistics rather than tripping the
+        // temporal trap's sequence check.
         let mut sig = tamper.signature.clone();
-        sig.nonce = holder.inner.trent.lock().unwrap().issue_nonce();
+        {
+            let mut trent = holder.inner.trent.lock().unwrap();
+            let mut rng2 = StdRng::from_entropy();
+            let _fresh = qds::sign(message_bytes, &mut trent, &mut rng2);
+            sig.nonce = trent.issue_nonce();
+            sig.temporal = Some(trent.mint_temporal_for(&sig.correction_bits, sig.nonce));
+        }
         outcomes.push(run_verify(
             &holder.inner,
             "attack",
@@ -302,6 +348,16 @@ pub async fn qds_attacks(
         // — the attempt itself is the event we log for the dashboard.
         uo.description = description;
         outcomes.push(uo);
+
+        // Timestamp forgery (Feature 2's dedicated attack): a fabricated
+        // far-future quantum-entropy timestamp with a forged hash-chain
+        // link — the temporal trap's chain check rejects it.
+        let ts_forgery = attempt_timestamp_forgery(
+            &mut holder.inner.trent.lock().unwrap(),
+            target,
+            &mut rng,
+        );
+        outcomes.push(run_attack(&holder.inner, ts_forgery, target));
         outcomes
     };
     Ok(Json(outcomes))
@@ -421,4 +477,154 @@ pub fn qds_router() -> Router<std::sync::Arc<AppState>> {
         .route("/api/qds/forgery-analysis", get(qds_forgery_analysis))
         .route("/api/qds/metrics", get(qds_metrics))
         .route("/api/qds/events", get(qds_events))
+        // Feature 3 — Chernoff–Hoeffding statistical confidence engine.
+        .route("/api/stats/bounds", get(bounds_endpoint))
+        // Feature 4 — multi-receiver consensus verification ring.
+        .route("/api/qds/consensus-ring", post(consensus_ring))
+}
+
+/// Feature 3 — the statistical confidence dossier for an observed sample.
+/// `?k=150&n=1000&threshold=0.15&noise=0.02&delta=0.01` returns the exact
+/// binomial p-value, both concentration bounds, and the N-scaling threshold
+/// curve the visualizer plots.
+#[derive(Debug, serde::Serialize)]
+pub struct BoundsResponse {
+    pub interval: detection::bounds::ConfidenceInterval,
+    pub curve: Vec<detection::bounds::ThresholdPoint>,
+    pub verdict: detection::bounds::VerdictConfidence,
+    pub chernoff_gain: f64,
+}
+
+pub async fn bounds_endpoint(
+    raw: axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<BoundsResponse>, AppError> {
+    let k = raw
+        .get("k")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(150);
+    let n = raw
+        .get("n")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1000)
+        .clamp(1, 2_000_000);
+    let threshold = raw
+        .get("threshold")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.15)
+        .clamp(0.0, 1.0);
+    let noise_floor = raw
+        .get("noise")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.02)
+        .clamp(0.0, 1.0);
+    let delta = raw
+        .get("delta")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.01)
+        .clamp(1e-9, 0.5);
+    let k = k.min(n);
+    let report = detection::bounds::bounds_report(k, n, noise_floor, delta, threshold);
+    Ok(Json(BoundsResponse {
+        interval: report.interval,
+        curve: report.curve,
+        verdict: report.verdict,
+        chernoff_gain: report.chernoff_gain,
+    }))
+}
+
+/// Feature 4 — run the multi-receiver consensus verification ring against
+/// the last genuine signature (or one supplied in the body). Each member's
+/// channel noise is an independent draw; a heavily-attacked member index
+/// can be injected to show quorum tolerance.
+#[derive(Debug, Deserialize)]
+pub struct RingRequest {
+    /// k of m required for unlock (default 3 of 5).
+    pub k: Option<usize>,
+    pub m: Option<usize>,
+    /// Member identities (user account names). Defaults to the classic
+    /// Bob/Charlie/Dave ring.
+    pub members: Option<Vec<String>>,
+    /// Index of a member whose channel is under attack (None = all honest).
+    pub attacked_member: Option<usize>,
+    /// Noise rate on the attacked member's channel (default 0.35).
+    pub attack_noise: Option<f64>,
+    /// Per-verifier gray-zone ceiling c2 (default 0.10).
+    pub tolerance: Option<f64>,
+    /// Optional RNG seed for reproducible demos.
+    pub seed: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RingResponse {
+    pub verdict: qds::consensus::RingVerdict,
+}
+
+pub async fn consensus_ring(
+    State(state): State<std::sync::Arc<AppState>>,
+    Json(req): Json<RingRequest>,
+) -> Result<Json<RingResponse>, AppError> {
+    let (genuine, _teleports, message) = {
+        let holder = state.qds.lock().unwrap();
+        let last = holder.last_signature.lock().unwrap().clone();
+        last.ok_or_else(|| {
+            bad_request("no signature on file — sign first (POST /api/qds/sign)".into())
+        })?
+    };
+    let k = req.k.unwrap_or(3).clamp(1, 32);
+    let m = req.m.unwrap_or(5).clamp(1, 32);
+    if req.k.is_some() && req.k.unwrap() > m {
+        return Err(bad_request("k cannot exceed m".into()));
+    }
+    let member_names: Vec<String> = match req.members {
+        Some(v) if v.len() == m => v,
+        Some(v) if v.len() < m => {
+            return Err(bad_request(format!(
+                "{} member names given for a ring of {m}",
+                v.len()
+            )))
+        }
+        _ => (0..m)
+            .map(|i| {
+                [
+                    "bob", "charlie", "dave", "erin", "frank", "grace", "heidi", "ivan",
+                ]
+                .get(i)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("receiver-{i}"))
+            })
+            .collect(),
+    };
+    let name_refs: Vec<&str> = member_names.iter().map(|s| s.as_str()).collect();
+    let config = qds::consensus::RingConfig {
+        k,
+        m,
+        noise_floor: 0.0,
+        attacked_member: req.attacked_member,
+        attack_noise: req.attack_noise.unwrap_or(0.35).clamp(0.0, 1.0),
+    };
+    let mut rng = match req.seed {
+        Some(s) => StdRng::seed_from_u64(s),
+        None => StdRng::from_entropy(),
+    };
+    let message_bytes = message.as_bytes();
+    let holder = state.qds.lock().unwrap();
+    let mut trent = holder.inner.trent.lock().unwrap();
+    let verdict = qds::consensus::run_ring(
+        message_bytes,
+        &genuine,
+        &mut trent,
+        &config,
+        req.tolerance.unwrap_or(0.10).clamp(0.0, 1.0),
+        &mut rng,
+        &name_refs,
+    );
+    let note = verdict.note.clone();
+    let ok = verdict.quorum_ok;
+    holder.inner.record(
+        "verify",
+        "consensus-ring",
+        ok,
+        format!("{note} — {k} of {m} required"),
+    );
+    Ok(Json(RingResponse { verdict }))
 }

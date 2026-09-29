@@ -20,12 +20,15 @@ use auth::{AuthState, OptionalAuth};
 use doc_api::{doc_router, DocStateHolder};
 use qds_api::{qds_router, QdsStateHolder};
 use rand::rngs::StdRng;
-use rand::SeedableRng;
+use rand::{Rng, RngCore, SeedableRng};
+use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
@@ -34,7 +37,7 @@ use tower_http::cors::CorsLayer;
 
 use crypto::{compute_message_hmac, verify_message_hmac};
 use detection::ThreatDetector;
-use quantum::{privacy_amplification, ChannelSession, QuantumKeyGenerator, SiftedKeyResult};
+use quantum::{ChannelSession, QuantumKeyGenerator, SiftedKeyResult};
 
 mod auth;
 mod doc_api;
@@ -83,6 +86,8 @@ struct AppState {
     qds_log_path: PathBuf,
     /// Document-sealing / transfer-portal / audit-log state.
     doc: DocStateHolder,
+    /// Short-lived, one-reveal blinded challenge rounds (memory-only).
+    blind_challenges: Mutex<HashMap<String, BlindChallengeRecord>>,
     /// The port the server actually bound (differs from the request only
     /// after a port-fallback; the frontend discovers it via /api/server-info
     /// and frontend/dist/server-port.json). Atomic because the listener is
@@ -142,6 +147,9 @@ struct ScenarioResult {
     mismatch_rate: f64,
     dynamic_threshold: f64,
     is_authentic: bool,
+    /// Channel was within the configured decision line and the modeled
+    /// entropy budget actually yielded a session key.
+    key_distilled: bool,
     threat_flagged: bool,
     /// Three-way channel classification (secure / degraded / under_attack).
     channel_class: String,
@@ -155,7 +163,61 @@ struct ScenarioResult {
     hmac_tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hmac_valid: Option<bool>,
+    /// Security accounting for the distilled key (v3 post-processing):
+    /// smooth min-entropy consumed, Toeplitz output length, achieved
+    /// extractor epsilon, reconciliation leakage, finite-key verdict.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    security: Option<SecurityAccounting>,
+    /// Classical software-model CHSH diagnostic run alongside the QKD
+    /// transmission. Its S > 2 + 3σ label applies only to sampled outcomes
+    /// in this model; it is not device-independent physical certification.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bell_test: Option<BellTestReport>,
+    /// Chernoff–Hoeffding statistical dossier computed from THIS run's
+    /// actual measurement statistics (k mismatches over n sifted positions)
+    /// — the bounds visualizer's live mode: every threshold ships with its
+    /// own finite-sample proof, per run. None never (cheap to compute).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    statistical_bounds: Option<detection::bounds::BoundsReport>,
     note: String,
+}
+
+/// The CHSH Bell-test paperwork for one run (see quantum::chsh).
+#[derive(Debug, Serialize, Clone)]
+struct BellTestReport {
+    /// Sampled CHSH value from the synthetic classical model.
+    s: f64,
+    /// One-σ standard error of S from the finite sample.
+    sigma: f64,
+    /// Entangled pairs consumed by the test.
+    rounds: usize,
+    /// Model-relative diagnostic: sampled S clears 2 by 3 estimated σ.
+    certified: bool,
+    /// Margin over the classical bound, in units of σ.
+    margin_sigma: f64,
+    /// Channel visibility V = 1 − 2·noise; S scales with it.
+    visibility: f64,
+}
+
+/// The leftover-hash-lemma paperwork for one distilled key — surfaced so
+/// the dashboard can SHOW the security contract, not just assert it.
+#[derive(Debug, Serialize, Clone)]
+struct SecurityAccounting {
+    /// Raw sifted positions entering the extractor.
+    raw_bits: usize,
+    /// Bits charged to Eve (basis-known positions).
+    eve_bits: usize,
+    /// Syndrome/parity bits disclosed during reconciliation.
+    reconciliation_leakage: usize,
+    /// Smooth min-entropy lower bound after the charges.
+    min_entropy_bits: f64,
+    /// Toeplitz extractor output length (bounded by LHL).
+    output_bits: usize,
+    /// LHL statistical-distance bound when the extractor seed is independent;
+    /// absent for deterministic seeded simulations and legacy fallback paths.
+    epsilon: Option<f64>,
+    /// True when the statistical decision was settled (finite-key analysis).
+    finite_key_ok: bool,
 }
 
 fn is_zero(v: &f64) -> bool {
@@ -177,10 +239,43 @@ fn finalize(
     base_threshold: f64,
     message: Option<&str>,
 ) -> Result<ScenarioResult, String> {
+    finalize_seeded(scenario, intercept_ratio, noise_rate, relay_hops, relay_stats, key_length, tx, base_threshold, message, 0)
+}
+
+/// `finalize` with an explicit extractor seed. When `pa_seed` is non-zero
+/// the Toeplitz matrix is pinned to it: two laptops that ran the SAME
+/// seeded QKD session (same sifted bits after reconciliation) then derive
+/// the SAME session key — the P2P handshake. Zero = fresh CSPRNG draw.
+fn finalize_seeded(
+    scenario: &str,
+    intercept_ratio: f64,
+    noise_rate: f64,
+    relay_hops: usize,
+    relay_stats: Vec<quantum::relay::HopStats>,
+    key_length: usize,
+    tx: SiftedKeyResult,
+    base_threshold: f64,
+    message: Option<&str>,
+    pa_seed: u64,
+) -> Result<ScenarioResult, String> {
     let detector = ThreatDetector::new(base_threshold).map_err(|e| e.to_string())?;
     let eval = detector
         .evaluate_channel(tx.mismatch_rate, tx.matching_bases_count, noise_rate, tx.noise_rate)
         .map_err(|e| e.to_string())?;
+
+    // ---- live statistical bounds (Feature 3, wired to real runs) --------
+    // The exact-binomial p-value and both concentration bounds computed on
+    // THIS run's numbers: k = observed mismatches, n = sifted positions.
+    // This is what turns the threat verdict into mathematics a judge can
+    // interrogate — the same numbers the detector used, now with receipts.
+    let observed_mismatches = (tx.mismatch_rate * tx.matching_bases_count as f64).round() as usize;
+    let statistical_bounds = detection::bounds::bounds_report(
+        observed_mismatches.min(tx.matching_bases_count),
+        tx.matching_bases_count,
+        base_threshold,
+        0.01,
+        eval.dynamic_threshold,
+    );
 
     let first_divergence = tx
         .sifted_key_bits
@@ -188,10 +283,46 @@ fn finalize(
         .zip(tx.alice_sifted_bits.iter())
         .position(|(b, a)| b != a);
 
-    let derived_secret = if eval.is_authentic {
-        Some(privacy_amplification(&tx.sifted_key_bits))
+    // ---- modeled post-processing -------------------------------------------
+    // On an accepted channel, reconcile the simulated bit strings and apply
+    // Toeplitz hashing with an OS-CSPRNG or reproducibility seed. The entropy
+    // estimate depends on the configured simulation/attack model; the LHL
+    // bound is only reported for the independent OS-CSPRNG seed path. The
+    // shared seeded demo intentionally makes no cryptographic privacy claim.
+    let (derived_secret, security) = if eval.is_authentic {
+        // Adaptive Cascade: the opening block follows the measured QBER
+        // (0.73/QBER, Brassard–Salvail 1993) — cheaper at a clean channel,
+        // finer at a noisy one.
+        let rec = quantum::reconcile_adaptive(&tx.alice_sifted_bits, &tx.sifted_key_bits, tx.mismatch_rate, 3);
+        let budget = pa::EntropyBudget {
+            n: tx.sifted_key_bits.len(),
+            eve_bits: ((tx.sifted_key_bits.len() as f64) * eval.eve_information_fraction) as usize,
+            reconciliation_leakage: rec.leakage_bits,
+        };
+        let distilled = if scenario.starts_with("sweep-") || scenario == "blind-challenge" {
+            None
+        } else if pa_seed != 0 {
+            pa::distill_seeded(&rec.bob_bits, budget, 1e-9, pa_seed)
+        } else {
+            pa::distill(&rec.bob_bits, budget, 1e-9, &mut rand::rngs::OsRng)
+        };
+        match distilled {
+            Some(d) => {
+                let accounting = SecurityAccounting {
+                    raw_bits: budget.n,
+                    eve_bits: budget.eve_bits,
+                    reconciliation_leakage: budget.reconciliation_leakage,
+                    min_entropy_bits: d.min_entropy_bits,
+                    output_bits: d.output_bits,
+                    epsilon: d.epsilon,
+                    finite_key_ok: eval.finite_key_ok,
+                };
+                (Some(d.key_hex), Some(accounting))
+            }
+            None => (None, None),
+        }
     } else {
-        None
+        (None, None)
     };
 
     let mut result = ScenarioResult {
@@ -206,14 +337,36 @@ fn finalize(
         mismatch_rate: eval.mismatch_rate,
         dynamic_threshold: eval.dynamic_threshold,
         is_authentic: eval.is_authentic,
+        key_distilled: derived_secret.is_some(),
         threat_flagged: eval.threat_flagged,
         channel_class: eval.channel_class.as_str().to_string(),
         first_divergence,
         derived_secret,
         hmac_tag: None,
         hmac_valid: None,
+        security,
+        bell_test: None,
+        statistical_bounds: Some(statistical_bounds),
         note: eval.note.to_string(),
     };
+
+    // CHSH is included as a Monte-Carlo diagnostic generated from the same
+    // requested channel parameters. It is not an independently implemented
+    // physical Bell experiment or a device-independent security certificate.
+    let bell = quantum::chsh::run_chsh(
+        (key_length * 8).max(4_000),
+        intercept_ratio.clamp(0.0, 1.0),
+        noise_rate,
+        &mut rand::rngs::OsRng,
+    );
+    result.bell_test = Some(BellTestReport {
+        s: (bell.s * 1000.0).round() / 1000.0,
+        sigma: (bell.sigma * 1000.0).round() / 1000.0,
+        rounds: bell.rounds,
+        certified: bell.certified(),
+        margin_sigma: (bell.margin_sigma() * 10.0).round() / 10.0,
+        visibility: (bell.visibility * 1000.0).round() / 1000.0,
+    });
 
     if let (Some(secret), Some(msg)) = (&result.derived_secret, message) {
         let tag = compute_message_hmac(secret, msg.as_bytes()).map_err(|e| e.to_string())?;
@@ -326,7 +479,7 @@ fn execute_scenario_streaming(
             }
         }
 
-        finalize(
+        finalize_seeded(
             scenario,
             intercept_ratio,
             noise_rate,
@@ -336,6 +489,7 @@ fn execute_scenario_streaming(
             session.finish(),
             base_threshold,
             message,
+            seed,
         )
     } else {
         // Multi-hop: relay transmissions batched so the live monitor still
@@ -618,7 +772,7 @@ async fn simulate_handler(
                     Vec::new(),
                 )
             };
-            let result = finalize(
+            let result = finalize_seeded(
                 &format!("sweep-{i}"),
                 ratio,
                 noise_rate,
@@ -628,6 +782,7 @@ async fn simulate_handler(
                 tx,
                 base_threshold,
                 None,
+                seed,
             )
             .map_err(|e| format!("Sweep point {i} failed: {e}"))?;
             sweep.push(result);
@@ -639,6 +794,246 @@ async fn simulate_handler(
     .map_err(internal_error)?;
 
     Ok(Json(response))
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BlindChallengeMeasurement {
+    run_id: u64,
+    key_length: usize,
+    qber: f64,
+    dynamic_threshold: f64,
+    matching_bases_count: usize,
+    mismatches: usize,
+    channel_class: String,
+    bell_test: Option<BellTestReport>,
+}
+
+/// Canonical reveal material includes both the hidden treatment and every
+/// measurement returned to the judge. The salt remains server-side until the
+/// one-time reveal; the client can then recompute the SHA-256 commitment.
+fn blind_commitment_payload(
+    treatment: &str,
+    noise_percent: u8,
+    intercept_percent: u8,
+    seed: u64,
+    measurement: &BlindChallengeMeasurement,
+    salt: &str,
+) -> String {
+    let bell = measurement.bell_test.as_ref().map(|report| {
+        format!(
+            "{:016x}:{:016x}:{}:{}:{:016x}:{:016x}",
+            report.s.to_bits(),
+            report.sigma.to_bits(),
+            report.rounds,
+            report.certified,
+            report.margin_sigma.to_bits(),
+            report.visibility.to_bits(),
+        )
+    }).unwrap_or_else(|| "none".into());
+    format!(
+        "signiq-blind-challenge-v1|treatment={treatment}|noise={noise_percent}|intercept={intercept_percent}|seed={seed}|run_id={}|key_length={}|qber_bits={:016x}|threshold_bits={:016x}|sifted={}|mismatches={}|class={}|bell={bell}|salt={salt}",
+        measurement.run_id,
+        measurement.key_length,
+        measurement.qber.to_bits(),
+        measurement.dynamic_threshold.to_bits(),
+        measurement.matching_bases_count,
+        measurement.mismatches,
+        measurement.channel_class,
+    )
+}
+
+fn blind_commitment_hash(payload: &str) -> String {
+    hex::encode(Sha256::digest(payload.as_bytes()))
+}
+
+#[derive(Clone)]
+struct BlindChallengeRecord {
+    run_id: u64,
+    treatment: &'static str,
+    explanation: &'static str,
+    commitment: String,
+    commitment_payload: String,
+    noise_rate: f64,
+    intercept_ratio: f64,
+    seed: u64,
+    result: ScenarioResult,
+    created_at: Instant,
+}
+
+#[derive(Debug, Serialize)]
+struct BlindChallengeStartResponse {
+    challenge_id: String,
+    commitment: String,
+    measurement: BlindChallengeMeasurement,
+}
+
+#[derive(Debug, Deserialize)]
+struct BlindChallengeRevealRequest {
+    challenge_id: String,
+    guess: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BlindChallengeRevealResponse {
+    correct: bool,
+    guess: String,
+    treatment: String,
+    explanation: String,
+    commitment: String,
+    commitment_payload: String,
+    noise_rate: f64,
+    intercept_ratio: f64,
+    seed: u64,
+    channel_class: String,
+    measurement: BlindChallengeMeasurement,
+}
+
+/// Start a server-blinded, educational classification round. The server
+/// measures one hidden treatment, commits to the treatment/settings/seed and
+/// measured outcomes, and returns that commitment with the readout. The salt
+/// and canonical payload stay server-side until the one-time reveal; this
+/// detects changes after the commitment, not dishonest simulation by the server.
+async fn blind_challenge_start(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<BlindChallengeStartResponse>, (StatusCode, Json<serde_json::Value>)> {
+    const KEY_LENGTH: usize = 12_000;
+    const BASE_THRESHOLD: f64 = 0.15;
+    const CASES: [(&str, f64, f64, u8, u8, &str); 3] = [
+        ("clear", 0.0, 0.0, 0, 0, "No configured environmental noise or Eve interception."),
+        ("environmental_noise", 0.08, 0.0, 8, 0, "8% software-modelled environmental bit-flip noise; no Eve interception."),
+        ("interception", 0.0, 0.70, 0, 70, "Eve intercepted 70% of simulated qubits; no configured environmental noise."),
+    ];
+
+    let mut secret_rng = rand::rngs::OsRng;
+    let case_index = secret_rng.gen_range(0..CASES.len());
+    let (treatment, noise_rate, intercept_ratio, noise_percent, intercept_percent, explanation) = CASES[case_index];
+    let seed = secret_rng.gen_range(0..=2_000_000_000u64);
+    let salt = format!("{:016x}{:016x}", secret_rng.next_u64(), secret_rng.next_u64());
+    let token = format!("{:016x}{:016x}", secret_rng.next_u64(), secret_rng.next_u64());
+    let run_id = state.run_counter.fetch_add(1, Ordering::SeqCst);
+
+    let result = tokio::task::spawn_blocking(move || -> Result<ScenarioResult, String> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let qkg = QuantumKeyGenerator::new(KEY_LENGTH).map_err(|e| e.to_string())?;
+        let keys = qkg.generate_eigenstates(&mut rng);
+        let tx = quantum::simulate_six_state_transmission_ratio(&keys, intercept_ratio, noise_rate, &mut rng);
+        finalize_seeded(
+            "blind-challenge",
+            intercept_ratio,
+            noise_rate,
+            0,
+            Vec::new(),
+            KEY_LENGTH,
+            tx,
+            BASE_THRESHOLD,
+            None,
+            seed,
+        )
+    })
+    .await
+    .map_err(|e| internal_error(format!("Challenge task join failure: {e}")))?
+    .map_err(internal_error)?;
+
+    let measurement = BlindChallengeMeasurement {
+        run_id,
+        key_length: KEY_LENGTH,
+        qber: result.mismatch_rate,
+        dynamic_threshold: result.dynamic_threshold,
+        matching_bases_count: result.matching_bases_count,
+        mismatches: result
+            .statistical_bounds
+            .as_ref()
+            .map(|bounds| bounds.interval.k)
+            .unwrap_or_else(|| (result.mismatch_rate * result.matching_bases_count as f64).round() as usize),
+        channel_class: result.channel_class.clone(),
+        bell_test: result.bell_test.clone(),
+    };
+    let commitment_payload = blind_commitment_payload(
+        treatment,
+        noise_percent,
+        intercept_percent,
+        seed,
+        &measurement,
+        &salt,
+    );
+    let commitment = blind_commitment_hash(&commitment_payload);
+
+    let now = Instant::now();
+    let mut challenges = state.blind_challenges.lock().expect("blind challenge lock poisoned");
+    challenges.retain(|_, challenge| now.duration_since(challenge.created_at) < Duration::from_secs(900));
+    if challenges.len() >= 100 {
+        if let Some(oldest) = challenges.iter().min_by_key(|(_, challenge)| challenge.created_at).map(|(id, _)| id.clone()) {
+            challenges.remove(&oldest);
+        }
+    }
+    challenges.insert(
+        token.clone(),
+        BlindChallengeRecord {
+            run_id,
+            treatment,
+            explanation,
+            commitment: commitment.clone(),
+            commitment_payload,
+            noise_rate,
+            intercept_ratio,
+            seed,
+            result,
+            created_at: now,
+        },
+    );
+
+    Ok(Json(BlindChallengeStartResponse { challenge_id: token, commitment, measurement }))
+}
+
+async fn blind_challenge_reveal(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BlindChallengeRevealRequest>,
+) -> Result<Json<BlindChallengeRevealResponse>, (StatusCode, Json<serde_json::Value>)> {
+    if !matches!(req.guess.as_str(), "clear" | "environmental_noise" | "interception") {
+        return Err(bad_request("guess must be clear, environmental_noise, or interception".into()));
+    }
+    let record = state
+        .blind_challenges
+        .lock()
+        .expect("blind challenge lock poisoned")
+        .remove(&req.challenge_id)
+        .ok_or_else(|| bad_request("challenge expired or was already revealed; start a new round".into()))?;
+    let actual_commitment = blind_commitment_hash(&record.commitment_payload);
+    if actual_commitment != record.commitment {
+        return Err(internal_error("blind challenge commitment did not verify".into()));
+    }
+    if record.created_at.elapsed() >= Duration::from_secs(900) {
+        return Err(bad_request("challenge expired; start a new round".into()));
+    }
+
+    let measurement = BlindChallengeMeasurement {
+        run_id: record.run_id,
+        key_length: record.result.raw_key_length,
+        qber: record.result.mismatch_rate,
+        dynamic_threshold: record.result.dynamic_threshold,
+        matching_bases_count: record.result.matching_bases_count,
+        mismatches: record
+            .result
+            .statistical_bounds
+            .as_ref()
+            .map(|bounds| bounds.interval.k)
+            .unwrap_or_else(|| (record.result.mismatch_rate * record.result.matching_bases_count as f64).round() as usize),
+        channel_class: record.result.channel_class.clone(),
+        bell_test: record.result.bell_test.clone(),
+    };
+    Ok(Json(BlindChallengeRevealResponse {
+        correct: req.guess == record.treatment,
+        guess: req.guess,
+        treatment: record.treatment.into(),
+        explanation: record.explanation.into(),
+        commitment: record.commitment,
+        commitment_payload: record.commitment_payload,
+        noise_rate: record.noise_rate,
+        intercept_ratio: record.intercept_ratio,
+        seed: record.seed,
+        channel_class: record.result.channel_class,
+        measurement,
+    }))
 }
 
 async fn sse_handler(
@@ -674,6 +1069,48 @@ fn format_bytes(n: u64) -> String {
         format!("{:.1} KB", n as f64 / 1024.0)
     } else {
         format!("{n} B")
+    }
+}
+
+#[cfg(test)]
+mod blind_challenge_tests {
+    use super::*;
+
+    #[test]
+    fn blind_round_commitment_binds_the_hidden_treatment_and_measurements() {
+        let measurement = BlindChallengeMeasurement {
+            run_id: 7,
+            key_length: 12_000,
+            qber: 0.08125,
+            dynamic_threshold: 0.171,
+            matching_bases_count: 4_000,
+            mismatches: 325,
+            channel_class: "degraded".into(),
+            bell_test: Some(BellTestReport {
+                s: 2.1,
+                sigma: 0.02,
+                rounds: 96_000,
+                certified: true,
+                margin_sigma: 5.0,
+                visibility: 0.98,
+            }),
+        };
+        let payload = blind_commitment_payload("environmental_noise", 8, 0, 26141, &measurement, "salt");
+        let commitment = blind_commitment_hash(&payload);
+        assert_eq!(commitment.len(), 64);
+        assert_eq!(commitment, blind_commitment_hash(&payload));
+        assert_ne!(
+            commitment,
+            blind_commitment_hash(&blind_commitment_payload("interception", 0, 70, 26141, &measurement, "salt")),
+            "changing the hidden treatment must invalidate the commitment"
+        );
+        let mut changed_measurement = measurement;
+        changed_measurement.mismatches += 1;
+        assert_ne!(
+            commitment,
+            blind_commitment_hash(&blind_commitment_payload("environmental_noise", 8, 0, 26141, &changed_measurement, "salt")),
+            "changing any displayed measurement must invalidate the commitment"
+        );
     }
 }
 
@@ -766,6 +1203,7 @@ async fn main() {
         qds: Mutex::new(qds_state),
         qds_log_path,
         doc: doc_state,
+        blind_challenges: Mutex::new(HashMap::new()),
         // Patched once the listener is bound (fallback may change it).
         bound_port: std::sync::atomic::AtomicU16::new(port),
         bound_host: host_string,
@@ -776,6 +1214,9 @@ async fn main() {
         .route("/api/server-info", get(server_info))
         .route("/api/run", post(run_handler))
         .route("/api/simulate", post(simulate_handler))
+        .route("/api/blind-challenge/start", post(blind_challenge_start))
+        .route("/api/blind-challenge/reveal", post(blind_challenge_reveal))
+        .layer(axum::extract::DefaultBodyLimit::max(12 * 1024 * 1024))
         .route("/api/events", get(sse_handler))
         .merge(qds_router())
         .merge(doc_router())

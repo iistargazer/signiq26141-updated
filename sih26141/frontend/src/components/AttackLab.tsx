@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   b64ToBytes,
   bytesToB64,
@@ -29,9 +29,15 @@ function CrossedIcon() {
 function TheaterSteps({ theater }: { theater: TheaterResponse }) {
   const [shown, setShown] = useState(1)
   const total = theater.steps.length
-  if (shown < total) {
-    setTimeout(() => setShown((s) => Math.min(s + 1, total)), 900)
-  }
+  // Step the playback from an effect — a setTimeout scheduled during render
+  // would stack timers on every re-render (parent logs, hover states) and
+  // race the reveal.
+  useEffect(() => {
+    if (shown < total) {
+      const t = window.setTimeout(() => setShown((s) => Math.min(s + 1, total)), 900)
+      return () => window.clearTimeout(t)
+    }
+  }, [shown, total])
   return (
     <div className="transfer-log" style={{ maxHeight: 320 }}>
       {theater.steps.slice(0, shown).map((s) => (
@@ -94,8 +100,8 @@ export function AttackLab({ onLog }: { onLog: (line: string) => void }) {
   const [containerB64, setContainerB64] = useState('')
   const [fileName, setFileName] = useState<string | null>(null)
   const [mode, setMode] = useState<AttackMode>('tamper_bytes')
-  const [label, setLabel] = useState('mallory')
-  const [recipient, setRecipient] = useState('bob')
+  const [label, setLabel] = useState('')
+  const [recipient, setRecipient] = useState('')
   const [busy, setBusy] = useState(false)
   const [attack, setAttack] = useState<AttackResponse | null>(null)
   const [theater, setTheater] = useState<TheaterResponse | null>(null)
@@ -133,7 +139,7 @@ export function AttackLab({ onLog }: { onLog: (line: string) => void }) {
       const resp = await docApi.attack({
         container_b64: containerB64,
         mode,
-        from_label: label.trim() || 'mallory',
+        from_label: label.trim() || 'attacker',
       })
       setAttack(resp)
       onLog(`attack [${resp.mode}] → ${resp.description}`)
@@ -157,8 +163,8 @@ export function AttackLab({ onLog }: { onLog: (line: string) => void }) {
       const resp = await docApi.attackTheater({
         container_b64: containerB64,
         mode,
-        victim: recipient.trim() || 'bob',
-        attacker: label.trim() || 'mallory',
+        victim: recipient.trim() || 'recipient',
+        attacker: label.trim() || 'attacker',
       })
       setTheater(resp)
       onLog(
@@ -185,10 +191,10 @@ export function AttackLab({ onLog }: { onLog: (line: string) => void }) {
       const resp = await docApi.peerSend({
         container_b64: attack.container_b64,
         to_user: recipient.trim(),
-        from_label: label.trim() || 'mallory',
+        from_label: label.trim() || 'attacker',
       })
       setForwarded(true)
-      onLog(`mallory forwarded her ${attack.mode} forgery → ${resp.destination}: ${resp.summary}`)
+      onLog(`attacker forwarded a ${attack.mode} test → ${resp.destination}: ${resp.summary}`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -212,7 +218,7 @@ export function AttackLab({ onLog }: { onLog: (line: string) => void }) {
   return (
     <section className="panel">
       <div className="panel-title-row">
-        <div className="panel-title">Attack Lab — Mallory vs the seal</div>
+        <div className="panel-title">Attack lab — testing the document seal</div>
         {busy && <span className="pulse-dot" aria-label="working" />}
       </div>
 
@@ -249,7 +255,7 @@ export function AttackLab({ onLog }: { onLog: (line: string) => void }) {
           </select>
         </label>
         <label className="control">
-          <span>Attacker label</span>
+          <span>Sender label</span>
           <input className="text-input" value={label} onChange={(e) => setLabel(e.target.value)} />
         </label>
         <label className="control">
@@ -281,10 +287,9 @@ export function AttackLab({ onLog }: { onLog: (line: string) => void }) {
       )}
 
       <div className="dim" style={{ margin: '4px 0 10px' }}>
-        {selected.hint}. Pick up the .qsig container Bob sealed (from the Document Vault download or
-        the peer transfer) — then <b>Run attack theater</b> to watch the whole story live:
-        interception on the wire (unreadable ciphertext shown), Mallory's tamper, the forward, and
-        the victim's cryptographic REJECTION with the exact failed check — every step audit-logged.
+        {selected.hint}. Use a disposable .qsig test container from the vault or transfer panel,
+        then <b>Run attack theater</b> to watch the staged interception, modification, forwarding
+        and recipient verification. The events are recorded in the audit ledger.
       </div>
 
       {attack && (

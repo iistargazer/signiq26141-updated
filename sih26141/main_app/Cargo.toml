@@ -8,4 +8,9 @@ quantum = { path = "../quantum" }
 crypto = { path = "../crypto" }
 detection = { path = "../detection" }
 attacks = { path = "../attacks" }
+sealing = { path = "../sealing" }
+audit = { path = "../audit" }
+qds = { path = "../qds" }
+sha2 = "0.10"
+hex = "0.4"
 rand = "0.8.5"

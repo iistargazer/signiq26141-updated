@@ -1,14 +1,18 @@
-import { useState } from 'react'
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
+import { lazy, Suspense, useState } from 'react'
+
+const ForgeryChart = lazy(() => import('./Charts').then((module) => ({ default: module.ForgeryChart })))
 import { qdsApi } from '../api'
+import { sliderFillStyle } from '../sliderFill'
+import { TeleportAnim } from './TeleportAnim'
 import type { ForgeryAnalysis, MetricsReport, QdsOutcome, QdsSetupResponse, QdsSignResponse } from '../api'
 
 const ATTACK_LABELS: Record<string, string> = {
   forgery: 'Forgery (guessed Bell outcomes)',
   impersonation: 'Impersonation (signature transplant)',
-  replay: 'Replay (nonce reuse)',
+  replay: 'Replay (consumed sifting window)',
   channel_tampering: 'Channel tampering (qubits disturbed in flight)',
   unauthorized_verification: 'Unauthorized verification (no key material)',
+  timestamp_forgery: 'Timestamp forgery (fabricated quantum-entropy timestamp)',
 }
 
 function verdictLabel(v: 'acc1' | 'acc0' | 'rej'): string {
@@ -49,7 +53,7 @@ function detectionRateOf(c: { true_positives: number; false_negatives: number })
 }
 
 export function QdsLab() {
-  const [message, setMessage] = useState('Transfer 100 QCO to account #8841')
+  const [message, setMessage] = useState('SigniQ demonstration message')
   const [keyInfo, setKeyInfo] = useState<QdsSetupResponse | null>(null)
   const [signInfo, setSignInfo] = useState<QdsSignResponse | null>(null)
   const [verifyInfo, setVerifyInfo] = useState<QdsOutcome | null>(null)
@@ -175,7 +179,7 @@ export function QdsLab() {
       <div className="panel-title-row">
         <div className="panel-title">QDS Signature Lab — Teleportation-based Signing</div>
         <button className="btn btn-ghost" onClick={initKeys} disabled={busy !== null}>
-          {busy === 'key' ? 'Generating…' : keyInfo ? 'Regenerate keys' : '1 · Generate quantum keys'}
+          {busy === 'key' ? 'Generating…' : keyInfo ? 'Regenerate keys' : 'Generate quantum keys'}
         </button>
       </div>
 
@@ -203,7 +207,7 @@ export function QdsLab() {
           placeholder="Message to sign"
         />
         <button className="btn btn-primary" onClick={doSign} disabled={busy !== null || !message.trim()}>
-          {busy === 'sign' ? 'Teleporting…' : '2 · Sign via teleportation'}
+          {busy === 'sign' ? 'Signing…' : 'Sign via teleportation'}
         </button>
       </div>
 
@@ -211,15 +215,41 @@ export function QdsLab() {
         <div className="qds-sign-result">
           <div className="qds-badges">
             <span className={`chip ${signInfo.initial_verification_accepted ? 'chip-green' : 'chip-red'}`}>
-              {signInfo.initial_verification_accepted ? '✓ Bob verified · 1-ACC (transferable)' : '✗ delivery failed'}
+              {signInfo.initial_verification_accepted ? '✓ First verifier accepted · 1-ACC (transferable)' : '✗ delivery failed'}
             </span>
             <span className="chip chip-gray">nonce {signInfo.nonce} (single-use)</span>
             <span className="chip chip-gray">
               {signInfo.qubit_count * signInfo.lambda * 2} signature bits
             </span>
           </div>
+          {signInfo.temporal && (
+            <div className="temporal-chips">
+              <span className="chip chip-gold" title="The notary's Lamport sifting-window clock — advanced only when a signature is accepted. A replay from an earlier window fails the sequence check.">
+                ⧗ window #{signInfo.temporal.window}
+              </span>
+              <span
+                className="chip chip-gray"
+                title={`Simulated timestamp minted ${new Date(signInfo.temporal.unix_ms).toLocaleString()} — its salt is derived from modeled Bell-measurement outcomes, not a physical quantum entropy source.`}
+              >
+                minted {new Date(signInfo.temporal.unix_ms).toLocaleTimeString()}
+              </span>
+              <span className="chip chip-gray" title="Hash-chain link: H(previous link ‖ window ‖ modeled entropy). This software-model check detects altered links; it is not a physical quantum guarantee.">
+                chain {signInfo.temporal.chain_prefix}…
+              </span>
+              <span className="chip chip-gray" title="Signature tag: welds this binding to the EXACT signature bits. Transplanting the timestamp onto another signature fails here.">
+                tag {signInfo.temporal.tag_prefix}…
+              </span>
+              <span className="chip chip-gray" title="Freshness horizon: direct presentations of this signature are accepted only while the notary's clock is below this window. Sealed DOCUMENTS are exempt — they verify via tag + chain + statistics, forever.">
+                fresh until window #{signInfo.temporal.valid_until_window}
+              </span>
+            </div>
+          )}
           <div className="qds-teleport">
-            <div className="qds-teleport-title">Teleportation trace (first 6 qubits)</div>
+            <div className="qds-teleport-title">
+              Teleportation trace (first 6 qubits — genuine statevector Bell measurements over an EPR pair,
+              Born-rule projective outcomes)
+            </div>
+            <TeleportAnim sample={signInfo.teleport_sample[0]} nonce={signInfo.nonce} />
             <table className="qds-table">
               <thead>
                 <tr>
@@ -253,7 +283,7 @@ export function QdsLab() {
           </div>
           <div className="qds-verify">
             <div className="panel-title-row" style={{ marginTop: 10 }}>
-              <div className="panel-title">Step 3 · Verify (play the verifier)</div>
+              <div className="panel-title">Verify the signature</div>
               <span>
                 <button className="btn btn-primary" onClick={doVerify} disabled={busy !== null}>
                   {busy === 'verify' ? 'Verifying…' : 'verify genuine signature'}
@@ -291,11 +321,12 @@ export function QdsLab() {
               max={1}
               step={0.05}
               value={tamperFraction}
+              style={sliderFillStyle(0, 1, tamperFraction)}
               onChange={(e) => setTamperFraction(Number(e.target.value))}
             />
           </div>
           <button className="btn btn-primary" onClick={doAttacks} disabled={busy !== null}>
-            {busy === 'attacks' ? 'Attacking…' : '4 · Launch all 5 attacks'}
+            {busy === 'attacks' ? 'Testing…' : 'Test all attack scenarios'}
           </button>
         </div>
       )}
@@ -331,44 +362,23 @@ export function QdsLab() {
 
       <div className="qds-forgery">
         <div className="panel-title-row">
-          <div className="panel-title">Forgery probability analysis</div>
+          <div className="panel-title">Modeled forgery probability</div>
           <button className="btn btn-ghost" onClick={doForgery} disabled={busy !== null}>
-            {busy === 'forgery' ? 'Analyzing…' : '5 · Run analysis'}
+            {busy === 'forgery' ? 'Analyzing…' : 'Run analysis'}
           </button>
         </div>
         {forgery ? (
           <>
             <p className="panel-hint">
-              Whole-signature forgery requires guessing every Bell outcome: P = (1/4)
-              <sup>qubits×λ</sup>. Monte-Carlo over {forgery.trials.toLocaleString()} trials
-              estimated {forgery.monte_carlo_probability.toExponential(2)} (theory{' '}
-              {forgery.theory_probability.toExponential(2)}). Bars show log₁₀(P) — lower is
-              harder to forge.
+              Under the lab’s independent uniform-guess model, whole-signature forgery has
+              theoretical P = (1/4)<sup>qubits×λ</sup>. Monte-Carlo over {forgery.trials.toLocaleString()} trials
+              estimated {forgery.monte_carlo_probability.toExponential(2)} (model value{' '}
+              {forgery.theory_probability.toExponential(2)}). This is a simulator result, not a deployed-security guarantee.
             </p>
             <div className="chart-wrap">
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(214, 186, 148, 0.12)" />
-                  <XAxis dataKey="lambda" stroke="#b09c7e" tick={{ fontSize: 11 }} />
-                  <YAxis
-                    stroke="#b09c7e"
-                    tick={{ fontSize: 11 }}
-                    domain={[-45, 0]}
-                    tickFormatter={(v: number) => `1e${v}`}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: '#181310',
-                      border: '1px solid rgba(214, 186, 148, 0.2)',
-                      borderRadius: 8,
-                      fontSize: 12,
-                    }}
-                    formatter={(v) => `P(forgery) = 10^${Number(v).toFixed(1)}`}
-                  />
-                  <ReferenceLine y={-30} stroke="#8fca9f" strokeDasharray="4 4" label={{ value: '128-bit security', fill: '#8fca9f', fontSize: 10, position: 'insideTopRight' }} />
-                  <Bar dataKey="log10" name="log10 P(forgery)" fill="#d9a851" radius={[3, 3, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+              <Suspense fallback={<div className="empty-state chart-loading" role="status">Loading forgery chart…</div>}>
+                <ForgeryChart data={chartData} />
+              </Suspense>
             </div>
           </>
         ) : (
@@ -378,9 +388,9 @@ export function QdsLab() {
 
       <div className="qds-metrics">
         <div className="panel-title-row">
-          <div className="panel-title">Performance evaluation (Lap 2 metrics)</div>
+          <div className="panel-title">Performance &amp; detection metrics</div>
           <button className="btn btn-ghost" onClick={doMetrics} disabled={busy !== null}>
-            {busy === 'metrics' ? 'Evaluating…' : '6 · Run evaluation'}
+            {busy === 'metrics' ? 'Evaluating…' : 'Run evaluation'}
           </button>
         </div>
         {metrics ? (

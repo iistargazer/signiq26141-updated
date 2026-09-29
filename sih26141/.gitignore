@@ -14,6 +14,17 @@ server-port.json
 
 # Freebuff thread-local workspace (launchers, preview logs, E2E data dirs)
 .freebuff/
+.cfreebuff/
+
+# Agent session memory (perpetual context + handoff notes — local only)
+AGENTS.md
+history.md
+
+# QDS replay-state snapshot is machine-local runtime state
+qds_events.replay-state.json
+
+# Scratch data from isolated smoke-test instances
+target/scratch/
 
 # Editor / OS noise
 .vscode/
@@ -23,4 +34,10 @@ Thumbs.db
 
 # Demo recordings / editing projects (keep them out of the repo)
 *.mp4
+*.webm
 *.obs/
+browser-recordings/
+
+# Presenter-internal documents stay local (see docs/internal/README.md)
+# (folder kept out via the rule below)
+docs/internal/

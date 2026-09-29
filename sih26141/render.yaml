@@ -4,15 +4,18 @@
 # Deploy: Render dashboard → New → Blueprint → point at this repo → Apply.
 # Afterwards every laptop just opens https://<service>.onrender.com
 #
-# The optional persistent disk keeps users.json / audit_log.jsonl /
-# qds_events.jsonl across deploys and restarts (free tier has no disk —
-# accounts and ledgers reset when the service restarts, which is fine for
-# a demo, just re-register the three accounts).
+# Free-tier notes (plan: free below):
+#   * the service sleeps after ~15 minutes idle — first request after a
+#     nap pays a ~30–60 s cold start while the image boots;
+#   * the free tier has no persistent disk, so users.json / audit_log.jsonl /
+#     qds_events.jsonl reset when the service restarts — re-register demo
+#     accounts afterwards (fine for evaluation; upgrade to `plan: starter`
+#     + a 1 GB disk for true 24/7 uptime and persistence).
 services:
   - type: web
     name: sih26141-quantum-pipeline
     runtime: docker
-    plan: starter # swap to "free" for a zero-cost demo (cold starts + no disk)
+    plan: free # upgrade to "starter" for always-on 24/7 + a persistent disk
     healthCheckPath: /api/health
     autoDeploy: true
     # 5 MB documents → ~9 MB JSON request bodies; Render's proxy allows
@@ -22,7 +25,12 @@ services:
         value: 8080
       - key: HOST
         value: 0.0.0.0
-    disk: # optional: accounts + ledgers persist across restarts
-      name: sih26141-data
-      mountPath: /data
-      sizeGB: 1
+      # Pins the QDS notary's setup randomness so signatures are
+      # deterministic across instance restarts. Replace before deploying.
+      - key: TRENT_SEED
+        generateValue: true
+    # A persistent disk requires a paid plan; see the free-tier notes above.
+    # disk:
+    #   name: sih26141-data
+    #   mountPath: /data
+    #   sizeGB: 1

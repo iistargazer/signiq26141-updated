@@ -180,6 +180,12 @@ pub fn sign_document_qds(
 
 /// Re-verify an attached QDS signature (side-effect-free transferability
 /// check — never consumes nonces). Returns the report either way.
+///
+/// **Long-lived-document semantics**: `verify_transferability` runs the
+/// document-safe temporal gate (`trap_check_document` — tag + chain
+/// integrity, no 64-window wire-freshness horizon), so a seal opened after
+/// any number of intervening signing sessions still verifies. Transplants
+/// and forged chains remain fatal at any age.
 pub fn verify_document_qds(
     trent: &mut qds::Trent,
     doc_sha256_hex: &str,
@@ -228,5 +234,31 @@ mod tests {
         forged.correction_bits[0] ^= 1;
         let bad2 = verify_document_qds(&mut trent, &doc_hash, &forged);
         assert!(!bad2.accepted, "flipped signature bit must break verification");
+    }
+
+    /// THE long-lived-document guarantee, end to end: a sealed document's
+    /// quantum signature must keep verifying no matter how many signing
+    /// sessions happen after it — 100 intervening sessions here, far past
+    /// the 64-window wire-freshness horizon.
+    #[test]
+    fn sealed_document_survives_100_intervening_sign_sessions() {
+        let mut rng = StdRng::from_entropy();
+        let mut trent = qds::Trent::setup(16, 4, &mut rng);
+        let doc_hash = "cafebabe".repeat(8);
+        let signed = sign_document_qds(&mut trent, &doc_hash);
+        assert!(signed.accepted_at_signing);
+        // 100 later sessions advance the notary's clock to window 101.
+        for i in 0..100 {
+            let msg = format!("session filler {i}");
+            let _ = sign_document_qds(&mut trent, &hex::encode(sha2::Sha256::digest(msg.as_bytes())).as_str());
+        }
+        assert_eq!(trent.window, 101, "clock advanced past the wire horizon (64)");
+        // The ORIGINAL document still opens: tag + chain hold, freshness N/A.
+        let ok = verify_document_qds(&mut trent, &doc_hash, &signed.signature);
+        assert!(ok.accepted, "document must survive clock advance: {}", ok.reason);
+        // ...while an attacker transplanting its signature onto another doc
+        // is still caught (longevity must not excuse forgery).
+        let stolen = verify_document_qds(&mut trent, "feedface".repeat(8).as_str(), &signed.signature);
+        assert!(!stolen.accepted);
     }
 }

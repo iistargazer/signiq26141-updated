@@ -11,6 +11,7 @@ import {
   type RelayDepositResponse,
   type OpenResponse,
 } from '../api'
+import { sliderFillStyle } from '../sliderFill'
 
 const MAX_BYTES = 5_000_000
 
@@ -54,15 +55,22 @@ type Tab = 'inbox' | 'outbox'
  *                           under a claim code; the recipient redeems it
  *                           from ANY network (home ↔ friend's house).
  *
- * The sender's copies land in the OUTBOX (never the inbox), and the wire
- * proof shows exactly what crossed the network: entropy, ciphertext sample,
- * hashes — the evidence that the file traveled encrypted.
+ * The sender's copies land in the OUTBOX (never the inbox). The wire report
+ * shows transport metadata and ciphertext samples; it is not a cryptographic
+ * proof that every byte was encrypted.
  */
-export function PeerTransfer({ onLog }: { onLog: (line: string) => void }) {
+export function PeerTransfer({
+  onLog,
+  authUser,
+  authRevision,
+}: {
+  onLog: (line: string) => void
+  authUser: string | null
+  authRevision: number
+}) {
   const [file, setFile] = useState<{ name: string; bytes: Uint8Array } | null>(null)
-  const [peerUrl, setPeerUrl] = useState('http://192.168.1.42:8080')
-  const [relayUrl, setRelayUrl] = useState('')
-  const [label, setLabel] = useState(getAuthUsername() ?? 'Alice')
+  const [peerUrl, setPeerUrl] = useState('')
+  const [label, setLabel] = useState(getAuthUsername() ?? '')
   const [toUser, setToUser] = useState('')
   const [claimCode, setClaimCode] = useState('')
   const [registeredUsers, setRegisteredUsers] = useState<string[]>([])
@@ -74,20 +82,39 @@ export function PeerTransfer({ onLog }: { onLog: (line: string) => void }) {
   const [sent, setSent] = useState<OutboxItem[]>([])
   const [wire, setWire] = useState<WireProof | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Consensus-ring delivery: members (comma-separated) + quorum k.
+  const [ringMembers, setRingMembers] = useState('')
+  const [ringK, setRingK] = useState(2)
+  const [ringResult, setRingResult] = useState<{ accepted: string[]; missing: string[]; k: number; m: number; note: string } | null>(null)
+  const [attesting, setAttesting] = useState<number | null>(null)
 
   const refreshBoxes = useCallback(() => {
-    if (!getAuthUsername()) return
+    if (!authUser) {
+      setItems([])
+      setSent([])
+      return
+    }
     docApi.inbox(false).then((r) => setItems(r.items)).catch(() => {})
     docApi.outbox().then((r) => setSent(r.items)).catch(() => {})
-  }, [])
+  }, [authUser])
 
   useEffect(() => {
+    setItems([])
+    setSent([])
+    setRegisteredUsers([])
+    setResult(null)
+    setDeposit(null)
+    setRingResult(null)
+    setError(null)
+    setLabel(authUser ?? '')
     refreshBoxes()
+    if (authUser) {
+      // Address book: registered usernames for local user-to-user delivery.
+      authApi.users().then((r) => setRegisteredUsers(r.users)).catch(() => {})
+    }
     const t = setInterval(refreshBoxes, 5000)
-    // Address book: registered usernames for local user-to-user delivery.
-    authApi.users().then((r) => setRegisteredUsers(r.users)).catch(() => {})
     return () => clearInterval(t)
-  }, [refreshBoxes])
+  }, [authRevision, authUser, refreshBoxes])
 
   const onFile = (f: File | null) => {
     setError(null)
@@ -235,6 +262,61 @@ export function PeerTransfer({ onLog }: { onLog: (line: string) => void }) {
     }
   }
 
+  // ---- Consensus-ring delivery (Feature 4 fused with the P2P flow) ------
+  // Seal the file, then deliver the SAME container to every ring member.
+  // Each member must verify independently and attest; the recipient's open
+  // stays locked until k attestations exist (enforced server-side).
+  const sendRing = async () => {
+    if (!file) return
+    const members = ringMembers
+      .split(/[\s,;]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (members.length === 0) {
+      setError('name the ring members (comma-separated usernames)')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    setRingResult(null)
+    try {
+      const sealed = await docApi.seal({ name: file.name, content_b64: bytesToB64(file.bytes) })
+      const resp = await docApi.ringSend({
+        container_b64: sealed.container_b64,
+        members,
+        k: Math.max(1, Math.min(members.length, ringK)),
+      })
+      setRingResult(resp)
+      onLog(`consensus ring → ${resp.note}`)
+      refreshBoxes()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // This logged-in member's INDEPENDENT verification of a ring-delivered
+  // copy — own session key, Trent's temporal trap, full statistics —
+  // recorded as an attestation on the shared tally.
+  const attestItem = async (id: number, name: string) => {
+    const me = getAuthUsername()
+    if (!me) return
+    setAttesting(id)
+    setError(null)
+    try {
+      const resp = await docApi.ringAttest(me, id)
+      onLog(
+        `ring attest '${name}': ${resp.verdict} — ${resp.note}`,
+      )
+      refreshBoxes()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setAttesting(null)
+    }
+  }
+
   const currentOutbox: OutboxItem[] = sent
 
   return (
@@ -263,7 +345,7 @@ export function PeerTransfer({ onLog }: { onLog: (line: string) => void }) {
         </label>
 
         <label className="control">
-          <span>Recipient username</span>
+          <span>Recipient account</span>
           <input
             className="text-input"
             value={toUser}
@@ -283,19 +365,55 @@ export function PeerTransfer({ onLog }: { onLog: (line: string) => void }) {
         </button>
       </div>
 
-      <div className="p2p-controls" style={{ borderTop: '1px solid var(--line, #2a2a3a)', paddingTop: 10 }}>
+      <div className="p2p-controls" style={{ borderTop: '1px solid var(--border)', paddingTop: 10 }}>
         <label className="control">
-          <span>Same-LAN laptop URL (other machine, HOST=0.0.0.0)</span>
+          <span>Consensus ring members (usernames, comma-separated)</span>
           <input
             className="text-input"
-            value={peerUrl}
-            onChange={(e) => setPeerUrl(e.target.value)}
-            placeholder="http://192.168.1.42:8080"
+            value={ringMembers}
+            onChange={(e) => setRingMembers(e.target.value)}
+            placeholder="bob, charlie, dave"
+            list="registered-users"
             spellCheck={false}
           />
         </label>
         <label className="control">
-          <span>Sender label</span>
+          <span>
+            Quorum k <b>{ringK}</b>
+          </span>
+          <input
+            type="range"
+            min={1}
+            max={Math.max(1, ringMembers.split(/[\s,;]+/).filter(Boolean).length)}
+            step={1}
+            value={Math.min(ringK, Math.max(1, ringMembers.split(/[\s,;]+/).filter(Boolean).length))}
+            style={sliderFillStyle(1, Math.max(1, ringMembers.split(/[\s,;]+/).filter(Boolean).length), ringK)}
+            onChange={(e) => setRingK(Number(e.target.value))}
+          />
+        </label>
+        <button
+          className="btn"
+          onClick={sendRing}
+          disabled={!file || busy || !ringMembers.trim()}
+          title="Deliver to every member; each verifies independently; the copy unlocks only after k-of-m attestations"
+        >
+          Send to ring →
+        </button>
+      </div>
+
+      <div className="p2p-controls" style={{ borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+        <label className="control">
+          <span>Recipient server URL (same network)</span>
+          <input
+            className="text-input"
+            value={peerUrl}
+            onChange={(e) => setPeerUrl(e.target.value)}
+            placeholder="http://<recipient-server-ip>:8080"
+            spellCheck={false}
+          />
+        </label>
+        <label className="control">
+          <span>Sender name (optional)</span>
           <input className="text-input" value={label} onChange={(e) => setLabel(e.target.value)} />
         </label>
         <button className="btn" onClick={() => send('laptop')} disabled={!file || busy || !peerUrl.trim() || !toUser.trim()}>
@@ -303,17 +421,11 @@ export function PeerTransfer({ onLog }: { onLog: (line: string) => void }) {
         </button>
       </div>
 
-      <div className="p2p-controls" style={{ borderTop: '1px solid var(--line, #2a2a3a)', paddingTop: 10 }}>
-        <label className="control">
-          <span>Cross-LAN relay URL (public deployment, e.g. onrender.com)</span>
-          <input
-            className="text-input"
-            value={relayUrl}
-            onChange={(e) => setRelayUrl(e.target.value)}
-            placeholder="https://your-app.onrender.com (blank = this server is the relay)"
-            spellCheck={false}
-          />
-        </label>
+      <div className="p2p-controls p2p-relay-controls">
+        <div className="p2p-relay-copy">
+          <b>Cross-network relay</b>
+          <span>Use this server as the relay. The recipient claims the encrypted deposit here with your one-time code.</span>
+        </div>
         <button
           className="btn"
           onClick={depositRelay}
@@ -339,13 +451,13 @@ export function PeerTransfer({ onLog }: { onLog: (line: string) => void }) {
       </div>
 
       <div className="dim" style={{ margin: '4px 0 10px' }}>
-        <b>Send to user</b> = same server, different accounts. <b>Send to laptop</b> = another
-        machine on the same network. <b>Relay</b> = different networks (home ↔ anywhere): the file
-        is parked encrypted under a claim code and the recipient redeems it from any network.{' '}
-        <button className="link-btn" onClick={() => copyToClipboard(window.location.origin, "this machine's base URL")}>
-          copy this machine's base URL
+        <b>Send to user</b> keeps delivery on this server. <b>Send to laptop</b> sends to a server
+        you control on the same network. <b>Cross-network relay</b> parks the encrypted container
+        here until the recipient claims it with a one-time code.{' '}
+        <button className="link-btn" onClick={() => copyToClipboard(window.location.origin, "this server's base URL")}>
+          copy this server's base URL
         </button>
-        . Only the AES-256-GCM ciphertext travels — and the <b>wire proof</b> proves it.
+        . The document container is encrypted before delivery; the wire report shows transport metadata, not a security attestation.
       </div>
 
       {result && (
@@ -353,6 +465,17 @@ export function PeerTransfer({ onLog }: { onLog: (line: string) => void }) {
           {result.delivered
             ? `✓ delivered — ${result.summary} (peer inbox id #${result.peer_item_id}, your copy in the outbox #${result.outbox_id})`
             : `✗ ${result.summary}`}
+        </div>
+      )}
+
+      {ringResult && (
+        <div className={`verdict ${ringResult.accepted.length > 0 ? 'verdict-ok' : 'verdict-bad'}`}>
+          ⛨ consensus ring — {ringResult.note}
+          {ringResult.missing.length > 0 && (
+            <>
+              {' '}unreachable: <b>{ringResult.missing.join(', ')}</b>
+            </>
+          )}
         </div>
       )}
 
@@ -375,7 +498,7 @@ export function PeerTransfer({ onLog }: { onLog: (line: string) => void }) {
       {wire && (
         <div className="proof-box">
           <div>
-            <b>wire proof — '{wire.doc_name}'</b> via {wire.transport}
+            <b>Transfer details — '{wire.doc_name}'</b> via {wire.transport}
           </div>
           <code style={{ display: 'block', margin: '4px 0' }}>
             wire bytes {wire.wire_bytes.toLocaleString()} · entropy{' '}
@@ -387,8 +510,7 @@ export function PeerTransfer({ onLog }: { onLog: (line: string) => void }) {
             first wire bytes: {wire.ciphertext_sample_hex.slice(0, 64)}…
           </code>
           <div className="dim">
-            {wire.verdict} — the original file's SHA-256 is {wire.doc_sha256.slice(0, 16)}… but every
-            byte on the wire was ciphertext. A wiretap sees noise.
+            {wire.verdict}            — the original file's SHA-256 is {wire.doc_sha256.slice(0, 16)}…. Ciphertext entropy and a byte sample are descriptive metadata, not proof that every wire byte was encrypted.
           </div>
           <button className="link-btn" onClick={() => setWire(null)}>
             dismiss
@@ -421,8 +543,27 @@ export function PeerTransfer({ onLog }: { onLog: (line: string) => void }) {
                       {' '}· {(i.meta.size / 1024).toFixed(1)} KB · from {i.from_peer} ·{' '}
                       {i.received_at.slice(11, 19)}
                     </span>
+                    {i.ring && (
+                      <span
+                        className={`chip chip-sm ${i.ring.attested_by.length >= i.ring.k ? 'chip-green' : 'chip-gray'}`}
+                        style={{ marginLeft: 6 }}
+                        title={`Consensus gate: ${i.ring.attested_by.length} of k = ${i.ring.k} independent verifications done (ring of ${i.ring.m}). Open stays locked until the quorum attests.${i.ring.attested_by.length > 0 ? ` Attested by: ${i.ring.attested_by.join(', ')}` : ''}`}
+                      >
+                        ⛨ ring {i.ring.attested_by.length}/{i.ring.k} of {i.ring.m}
+                      </span>
+                    )}
                   </div>
                   <div className="p2p-inbox-actions">
+                    {i.ring && !i.ring.attested_by.includes(getAuthUsername() ?? '') && (
+                      <button
+                        className="btn btn-sm"
+                        onClick={() => attestItem(i.id, i.meta.name)}
+                        disabled={attesting === i.id}
+                        title="Run YOUR independent verification (own key, Trent's temporal trap, full statistics) and record the attestation"
+                      >
+                        {attesting === i.id ? 'verifying…' : 'attest'}
+                      </button>
+                    )}
                     {i.verified === null && (
                       <button className="btn btn-sm" onClick={() => verifyItem(i.id, i.meta.name)}>
                         verify
@@ -436,8 +577,8 @@ export function PeerTransfer({ onLog }: { onLog: (line: string) => void }) {
                     <button className="btn btn-sm" onClick={() => openItem(i.id, false, i.meta.name)} title="unlock (key + QDS signature) and download the original">
                       ⬇ open
                     </button>
-                    <button className="btn btn-sm" onClick={() => showWireProof(i.id, false)} title="prove what crossed the wire">
-                      wire proof
+                    <button className="btn btn-sm" onClick={() => showWireProof(i.id, false)} title="inspect available transfer metadata">
+                      transfer details
                     </button>
                     <button className="link-btn" onClick={() => deleteItem(i.id, false)}>
                       delete
@@ -473,8 +614,8 @@ export function PeerTransfer({ onLog }: { onLog: (line: string) => void }) {
                     <button className="btn btn-sm" onClick={() => openItem(o.id, true, o.meta.name)} title="unlock your sent copy and download the original">
                       ⬇ open
                     </button>
-                    <button className="btn btn-sm" onClick={() => showWireProof(o.id, true)} title="prove what crossed the wire">
-                      wire proof
+                    <button className="btn btn-sm" onClick={() => showWireProof(o.id, true)} title="inspect available transfer metadata">
+                      transfer details
                     </button>
                     <button className="link-btn" onClick={() => deleteItem(o.id, true)}>
                       delete

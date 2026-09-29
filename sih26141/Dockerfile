@@ -14,7 +14,11 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---- Stage 2: build the Rust server ----------------------------------------
-FROM rust:1.82-slim AS backend
+# NOTE: deliberately `rust:1` (floating major), NOT a pinned minor. A frozen
+# `rust:1.82-slim` broke the build when workspace dependencies started using
+# features beyond that toolchain's cargo (edition-2024 support). Track stable
+# 1.x so dependency updates cannot strand the image on an old compiler.
+FROM rust:1-slim AS backend
 WORKDIR /app
 # Full workspace copy: the root Cargo.toml lists every member crate, so a
 # partial copy would break the workspace manifest. .dockerignore keeps the

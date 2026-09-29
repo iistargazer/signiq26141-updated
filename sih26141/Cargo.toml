@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "quantum",
+    "pa",
     "crypto",
     "detection",
     "attacks",
@@ -18,3 +19,10 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 authors = ["SIH26141 Team"]
+
+# Deliberately minimal: strip symbols from the deployed server binary (the
+# Docker runtime image ships it). No other overrides — default opt-level 3
+# and codegen behavior are fine, and panic=abort would change failure
+# semantics for a long-running server.
+[profile.release]
+strip = true

@@ -93,9 +93,14 @@ export function StatusCard({ title, progress, result, streaming }: Props) {
 
       {result && !authentic && (
         <div className="card-alert">
-          {result.channel_class === 'under_attack'
-            ? 'Eavesdropping signature — QBER exceeds the finite-key bound. Key distillation aborted.'
-            : 'QBER above tolerance — no shared secret distilled.'}
+          The measured QBER exceeded this run’s configured decision line. No key was distilled;
+          the software-model result does not identify the cause.
+        </div>
+      )}
+      {result && authentic && !result.key_distilled && (
+        <div className="card-alert card-alert-amber">
+          QBER is within the configured decision line, but the modeled entropy budget was
+          insufficient to produce a key. No session key was created.
         </div>
       )}
       {result && degraded && (
@@ -103,6 +108,71 @@ export function StatusCard({ title, progress, result, streaming }: Props) {
           Channel Degradation Warning — QBER above the noise floor but below the attack line
           {result.noise_rate ? ` (fiber noise ${(result.noise_rate * 100).toFixed(1)}%)` : ''}. Environmental, not
           adversarial — keys distilled with caution.
+        </div>
+      )}
+      {result?.bell_test && (
+        <div
+          className="sec-accounting"
+          title="Classical Monte-Carlo CHSH diagnostic. S > 2 + 3σ is a model-relative threshold result; this is not a physical Bell test or device-independent certification."
+        >
+          <div className="sec-row">
+            <span className="stat-name">simulated CHSH S</span>
+            <span className={`mono ${result.bell_test.certified ? 'sec-ok' : 'sec-warn'}`}>
+              {result.bell_test.s.toFixed(3)} ± {result.bell_test.sigma.toFixed(3)}
+            </span>
+          </div>
+          <div className="sec-row">
+            <span className="stat-name">model flag</span>
+            <span className={`mono ${result.bell_test.certified ? 'sec-ok' : 'sec-warn'}`}>
+              {result.bell_test.certified
+                ? `S > 2 by ${result.bell_test.margin_sigma.toFixed(1)}σ in this sample`
+                : 'S does not clear the model threshold'}
+            </span>
+          </div>
+          <div className="sec-row">
+            <span className="stat-name">visibility</span>
+            <span className="mono">{(result.bell_test.visibility * 100).toFixed(0)}%</span>
+          </div>
+          <div className="sec-row">
+            <span className="stat-name">pairs tested</span>
+            <span className="mono">{result.bell_test.rounds.toLocaleString()}</span>
+          </div>
+        </div>
+      )}
+      {result?.security && authentic && result.key_distilled && (
+        <div className="sec-accounting" title="Modeled entropy accounting. The LHL bound is shown only for the independent-seed extractor path and is not a hardware or deployment guarantee.">
+          <div className="sec-row">
+            <span className="stat-name">min-entropy</span>
+            <span className="mono">{result.security.min_entropy_bits.toFixed(0)} bits</span>
+          </div>
+          <div className="sec-row">
+            <span className="stat-name">eve −</span>
+            <span className="mono">{result.security.eve_bits.toLocaleString()} bits</span>
+          </div>
+          <div className="sec-row">
+            <span className="stat-name">reconcile leak −</span>
+            <span className="mono">{result.security.reconciliation_leakage.toLocaleString()} bits</span>
+          </div>
+          <div className="sec-row">
+            <span className="stat-name">extracted</span>
+            <span className="mono">{result.security.output_bits}-bit key</span>
+          </div>
+          <div className="sec-row">
+            <span className="stat-name">ε (LHL model)</span>
+            <span className="mono">
+              {result.security.epsilon === null
+                ? 'not claimed (seeded demo)'
+                : result.security.epsilon <= 2 ** -300
+                  ? '≤ 2⁻³⁰⁰'
+                  : result.security.epsilon.toExponential(1)}
+            </span>
+          </div>
+          <div className="sec-row">
+            <span className="stat-name">finite-key</span>
+            <span className={`mono ${result.security.finite_key_ok ? 'sec-ok' : 'sec-warn'}`}>
+              {result.security.finite_key_ok ? 'settled' : 'unresolved'}
+            </span>
+          </div>
         </div>
       )}
     </div>

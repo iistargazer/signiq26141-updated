@@ -1,460 +1,197 @@
-# SIH26141 — Quantum-Secured Pipeline
+<p align="center">
+  <img src="docs/assets/prometheus-flame.svg" width="72" alt="Team Prometheus flame" />
+</p>
 
-Two quantum-security layers in one framework, deployed live:
+<h1 align="center">SigniQ</h1>
 
-- **Frontend (dashboard):** Vercel
-- **Backend (Rust API server):** Render
+<p align="center">
+  <b>Team Prometheus</b> · SIH26141<br/>
+  Quantum-inspired threat detection for digital-signature security — built as an honest, inspectable software simulation.
+</p>
 
-Open the Vercel project URL for the full dashboard — the frontend proxies
-`/api/*` to the Render backend, so one tab gets both layers.
+---
 
-(See `docs/DASHBOARD_RUN_GUIDE.md` for the full run/deploy checklist,
-`docs/DASHBOARD_GUIDE.md` for what every element on the page does,
-`docs/DEPLOYMENT_GUIDE.md` for deploying to Render/Vercel and running the
-three-laptop demo with accounts, and `docs/FEATURES_V2.md` for the deep-dive
-on the v2 features.)
+SigniQ is a classical software simulation of a quantum-secured document pipeline. It pairs a six-state quantum key distribution model with a teleportation-based quantum digital signature protocol, then layers explicit statistical threat detection on top — no AI, no ML: every accept/reject verdict comes from a closed-form bound or threshold applied to measurement statistics. You can seal a document, attack it four different ways, and watch each forgery get rejected for a named, explainable reason.
 
-## What it does
+The problem statement asks for exactly this shape of work: *"a simulation of a teleportation-based quantum digital signature protocol with a threat-detection layer that, explicitly without any AI or ML, uses quantum principles — Pauli eigenstates, projective measurements and statistical analysis of measurement outcomes — to detect forgery, impersonation, replay attacks and quantum channel manipulation by computing forgery probabilities and verification accuracy from measurement statistics, evaluated through attack simulations that show detection rates and false-accept rates while preserving the protocol's information-theoretic security guarantees."* Every clause of that sentence is implemented and mapped to source in [`docs/DELIVERABLES.md`](docs/DELIVERABLES.md).
 
-1. **Six-state QKD** with Hoeffding-bound eavesdropping detection, privacy
-   amplification, and HMAC message authentication.
-2. **Teleportation-based Quantum Digital Signatures (QDS)** — Bell-pair
-   entanglement, quantum teleportation with Pauli corrections, nonce-ledger
-   replay defense, and statistical (non-ML) forgery/impersonation/replay/
-   channel-tampering detection with forgery-probability analysis.
+## What it is / what it is not
 
-Both layers are driven from a single Rust API server with an interactive React
-dashboard. No AI/ML anywhere — detection is pure measurement statistics.
+| ✅ It is | ❌ It is not |
+|---|---|
+| A classical **simulation** of QKD and teleportation-based QDS | Quantum hardware, a physical channel, or a real detector |
+| Statistical detection: Hoeffding/Chernoff bounds, binomial tails | An AI/ML system — zero ML dependencies (grep-verifiable) |
+| An educational prototype with reproducible seeded experiments | Production cryptography |
+| A tamper-evident audit ledger proving **internal consistency** | Publisher authentication — an audit root alone doesn't prove *who* published |
 
-## Seven scenario features (v2)
+## Contents
 
-| # | Feature | Where |
+- [Quickstart](#quickstart)
+- [How it works](#how-it-works)
+- [Features](#features)
+- [Evaluation results](#evaluation-results)
+- [The audit ledger](#the-audit-ledger)
+- [Limitations](#limitations)
+- [Repository layout](#repository-layout)
+- [Documentation](#documentation)
+- [Verification](#verification)
+- [Deploying](#deploying)
+- [License & team](#license--team)
+
+## Quickstart
+
+Requirements: **Rust (cargo)** and **Node.js 20+ with npm**.
+
+```sh
+# 1. Build the dashboard
+cd frontend
+npm ci
+npm run build
+cd ..
+
+# 2. Run the API server (serves the built dashboard too)
+cargo run -p server
+```
+
+Open the printed URL — normally `http://127.0.0.1:8080`. For frontend hot reload, run `npm run dev` from `frontend/` while the API server runs. A terminal interface exists too: `cargo run -p tui`.
+
+## How it works
+
+The whole pipeline in one picture (every block is a classical software model):
+
+```
+┌──────────────┐  3000 Pauli eigenstates (X/Y/Z × ±1)
+│    Alice     │──────────────────────────────┐
+└──────────────┘                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│  channel model: fiber noise · relay hops · Eve scenarios    │
+│  (intercept–resend, photon-number-splitting)                │
+└─────────────────────────────────────────────────────────────┘
+                              │ measurement records
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│  threat detector: QBER vs dynamic threshold · Hoeffding /   │
+│  Chernoff confidence intervals · exact binomial tails       │
+│  (explicit statistics only — no AI, no ML)                  │
+└─────────────────────────────────────────────────────────────┘
+            │ authentic                     │ attack detected
+            ▼                               ▼
+┌───────────────────────────┐   key distillation aborted
+│  privacy amplification    │   (an abort rejects this run;
+│  Toeplitz extractor +     │    it is not key revocation)
+│  SHA-256 → 256-bit key    │
+└─────────────┬─────────────┘
+              ▼
+┌───────────────────────────┐      ┌────────────────────────────┐
+│  HMAC-SHA256 binding ·    │      │  audit ledger: hash chain  │
+│  .qsig seal (AES-256-GCM, │─────▶│  · Merkle root · inclusion │
+│  key commitment, quorum)  │      │  proofs (internal consist.)│
+└───────────────────────────┘      └────────────────────────────┘
+```
+
+**1 — Key generation (six-state QKD simulation).** Alice prepares qubits in one of six Pauli eigenstates (X/Y/Z × ±1). Bob measures in random bases; the sifted key's error rate (QBER) is compared against a Hoeffding-derived threshold that tightens as sample count grows. A clean channel distills a 256-bit key via privacy amplification; an intercepted channel crosses the threshold and key distillation aborts.
+
+**2 — Signatures (teleportation-based QDS).** Signatures are built from genuine Bell-measurement outcomes of a statevector teleportation engine — CNOT + Hadamard, Born-rule collapse, Pauli corrections. Forging the whole signature means guessing every Bell outcome: **P(forgery) = 4^(−q·λ)** (≈1.5×10⁻⁵ at default parameters q=8, λ=1). Verdicts follow the protocol's 1-ACC / 0-ACC / REJ semantics with transferability, and a temporal trap (single-use nonces + sifting-window sequence) kills replays.
+
+**3 — Threat detection (statistics, not models).** Detection rates and false-accept rates come from seeded Monte-Carlo attack batteries over a confusion matrix. Forgery, impersonation, replay, channel tampering and unauthorized verification each have a named attack routine and a named rejection reason.
+
+**4 — Documents.** Files are sealed into `.qsig` containers (AES-256-GCM, key commitment, Shamir-split quorum optional) and delivered peer-to-peer or through k-of-m consensus rings. The recipient verifies the container cryptographically before trusting a byte of it.
+
+## Features
+
+- **Six-state QKD simulation** — Pauli eigenstate preparation, sifting, QBER, finite-sample classification, relay hops and fiber-noise modeling, live channel streaming with attack scenarios.
+- **Teleportation-based QDS** — statevector Bell measurement, Born-rule outcomes, Pauli corrections, 1-ACC/0-ACC/REJ verdicts, transferability (second-verifier consensus), replay-state persistence across restarts.
+- **Threat-detection layer** — Hoeffding/Chernoff confidence engine (`/api/stats/bounds`), dynamic rejection thresholds, per-attack-class detection rates, explicit false-accept rate.
+- **Document vault** — seal/open `.qsig` containers (v2 payload AES-256-GCM; v3 envelope hides all metadata), tamper battery, attack theater replay.
+- **P2P transfer + consensus rings** — laptop-to-laptop delivery, same-server user delivery, k-of-m attestation gates that stay locked below quorum.
+- **Audit ledger** — persistent JSONL events, hash chain, Merkle root, inclusion proofs, portable export, offline bundle verification in the browser.
+- **Evaluation** — `/api/qds/metrics` returns verification accuracy, per-class detection, false-accept/false-alarm rates, forgery probabilities (empirical + theoretical), and operation timings.
+- **Dashboard + TUI** — React dashboard with live SSE monitor, guided run, team dossier; terminal UI via `cargo run -p tui`.
+
+## Evaluation results
+
+Measured live on this codebase (isolated scratch instance, Sept 29, 2026; `trials=120, seed=42` — reproducible with the command in [Verification](#verification)):
+
+| Metric | Teleport QDS | Six-state QDS |
 |---|---|---|
-| 1 | **Multi-hop relay nodes (quantum repeaters)** — route qubits through trusted relays, per-link sifting/noise/intercept stats | `quantum/src/relay.rs`, relay-hop slider + route view in the dashboard |
-| 2 | **Noise & channel degradation filter** — environmental bit-flips (fiber/turbulence) independent of attacks; the detector gives a 3-way verdict: secure / **Channel Degradation Warning** / attack | `quantum` (noise model), `detection` (3-way classifier), fiber-noise slider |
-| 3 | **Document sealing (`.qsig`)** — SHA-256 file hash + HMAC bound to the QKD session key + **AES-256-GCM** encrypted payload (metadata bound as AAD), packed inside an **opaque v3 envelope** — opening the file in an editor shows noise, not the document — up to **5 MB** | `sealing` crate, `POST /api/doc/seal`, Quantum Document Vault |
-| 4 | **P2P transfer portal** — real laptop-to-laptop transfer over HTTP + the simulated relay-route transfer, with a live per-stage log | `POST /api/doc/send` + `/api/doc/receive` + `/api/doc/inbox`, `POST /api/doc/transfer` (SSE), Peer-to-Peer panel |
-| 5 | **Merkle-tree audit ledger** — hash-chained, append-only event log with Merkle root + inclusion proofs (forensics / non-repudiation) | `audit` crate, `/api/audit/*`, ledger panel |
-| 6 | **Interactive TUI dashboard** — ratatui terminal UI with live QBER sparkline, relay route, vault actions, audit tail | `tui` crate — `cargo run -p tui` |
-| 7 | **n-of-m threshold authorization** — Shamir secret sharing of the seal key across officers; k-of-m shares unlock | `sealing` (GF(251) Shamir), `/api/doc/quorum` + `/api/doc/quorum/unlock`, officer toggles |
-| 8 | **Multi-user accounts** — register/login (PBKDF2-hashed passwords, bearer tokens); per-user session keys, seals and P2P inboxes | `server/src/auth.rs`, `/api/auth/*`, AuthBar |
-| 9 | **Attack Lab (Mallory)** — tamper / swap-metadata / re-seal / truncate a captured container and watch Bob's side **cryptographically reject** it | `POST /api/doc/attack`, AttackLab panel |
+| Verification accuracy | 100.0% | 100.0% |
+| Detection rate (TPR) | 100.0% | 100.0% |
+| False-accept rate (missed attacks) | 0.0% | 0.0% |
+| False-alarm rate (legitimate flagged) | 0.0% | 0.0% |
+| Per-class detection (forgery / impersonation / replay / channel tampering / unauthorized) | 100% each | 100% each |
+| Theoretical forgery probability | 4⁻⁸ ≈ 1.53×10⁻⁵ | — |
+| Empirical forgery success | 0 / 120 | 0 / 120 |
+| Timing (sign / verify) | 41 µs / 18 µs | machine-specific |
 
-All new parameters are optional with backwards-compatible defaults — existing
-callers and the deployed dashboard keep working untouched.
+End-to-end behavior in the same run: 4/4 tamper modes rejected with named causes; consensus ring locked at k−1, opened at quorum with byte-exact document recovery; 6/6 QDS attack classes rejected; audit chain verified intact over 131 events. These are simulation measurements under seeded test distributions — not universal security guarantees (see [Limitations](#limitations)).
 
-**Deep-dive on every feature (math, code mapping, demo lines):
-`docs/FEATURES_V2.md`.** What follows is the short version.
+## The audit ledger
 
-### 1 · Multi-hop relay nodes (quantum repeaters)
+Every security-relevant action — seal, verify, attack, key derivation, delivery — is appended to a hash-chained JSONL ledger with a Merkle root and per-event inclusion proofs. The dashboard can export a self-contained bundle and verify it offline; `GET /api/audit/verify` re-checks the chain. **Scope, stated plainly:** this proves the ledger's internal consistency. It does not prove *who* published it — that requires an expected root from an independent trusted source. There is deliberately no key-revocation lifecycle: a QKD abort or rejected signature is not revocation.
 
-Real QKD dies with distance: fiber attenuation eats single photons, which is
-why every deployed QKD network (SECOQC, Tokyo, Beijing–Shanghai) uses trusted
-relay nodes. Set **Relay hops** (0–4) and Alice's qubits traverse
-Alice → R1 → … → Bob one link at a time. Each relay measures in a random
-basis (agreement probability 1/3 per link — a missed guess is line loss,
-the qubit dies there) and re-prepares the measured state for the next link.
-Each link applies its own environmental noise and can host its own Eve.
+## Limitations
 
-- Yield collapses to **(1/3)^(hops+1)** — 20k qubits → ~740 sifted bits at
-  2 relays (vs ~6,650 direct). That collapse *is* the cost of trusted-node
-  networks, made visible.
-- Status cards render a **route strip**: one glowing dot per link (red when
-  that link saw an interception), plus the node chain and key-survival %.
-- Per-link `relay_stats` (in/out qubits, interceptions, QBER, from/to) come
-  back on `/api/run` and render in the UI and TUI.
+1. **All quantum behavior is classical software simulation.** No quantum hardware, physical detector, or physical channel participates anywhere.
+2. **Simulation ≠ certification.** The protocol's information-theoretic arguments are preserved in the model; simulations demonstrate the statistics, they cannot certify physical devices.
+3. **The audit ledger proves internal consistency only**, not publisher identity.
+4. **No key-revocation lifecycle exists.**
+5. **Metrics are seeded-reproducible, not universal** — detection rates describe the implemented test distributions; timings are machine-specific.
+6. **Educational prototype** — review cryptographic constructions and deployment configuration before any production use.
+7. **Deployment configuration ships in the repo** (Dockerfile, render.yaml — see [Deploying](#deploying)); it is not itself a security review of the hosting setup.
 
-### 2 · Quantum noise & channel degradation filter
+## Deploying
 
-A detector that flags every elevated QBER as an attack is a broken detector —
-real fiber flips bits on its own. **Fiber noise** (0–12%) models environmental
-disturbance: a pure polarization flip in flight that **never changes the
-state's basis** — the physical property that distinguishes it from
-intercept-resend, where Eve's measurement collapses the state into her basis.
+The repository is deployment-ready: a multi-stage `Dockerfile` builds the dashboard and the Rust server into one image (persistent state under a `/data` volume), and a Render Blueprint (`render.yaml`) describes the single-service deployment with a `/api/health` check. A one-command local rehearsal:
 
-The detector's verdict is now three-way (`detection::ChannelClass`):
-
-| Verdict | Condition | Consequence |
-|---|---|---|
-| `✓ secure` | QBER ≤ noise floor + ε(n) | keys distilled normally |
-| `⚠ degradation warning` | above the noise line, below the 25% attack line | **environmental, not adversarial** — keys still distilled, event logged |
-| `✗ under attack` | QBER > 25% (six-state intercept ceiling) | key distillation **aborted** |
-
-The degraded band rides on the *configured noise floor*, so a clean run at
-3% noise stays secure — the warning fires only when QBER exceeds what the
-current noise can physically explain. A 1/3-ceiling QBER can only come from
-basis collapse, and basis collapse can only come from a measurement.
-
-### 3 · Secure document signing & sealing (`.qsig`)The product layer: any file up to **5 MB** (PDF, image, contract) bound to the
-QKD-derived session key. **Quantum Document Vault** in the dashboard: drop a
-file, seal, download the portable `.qsig` container; verify re-checks
-everything.
-
-**The lock is real now — v3 opaque envelope.** A sealed `.qsig` is not a
-readable JSON file with the text pasted inside. The entire container (file
-name, size, hashes, timestamps — every byte of metadata) is serialized to
-JSON and **sealed under AES-256-GCM with the QDS session key**. The only
-cleartext is a one-line header:
-
-```
-QSIG3 3 <nonce> <key-commitment>\n<binary ciphertext — pure noise>
+```sh
+docker build -t sih26141 . && docker run -p 8080:8080 sih26141
 ```
 
-Open a sealed file in Notepad and you see garbage — no name, no hash, no
-plaintext. The header's key commitment (SHA-256 of the canonical key) lets a
-server tell *which* session key sealed it without leaking the key, and lets
-verification fail with a precise reason ("sealed under a different session
-key — key possibly compromised") instead of silent garbage. Anyone without
-the key sees nothing; anyone with the key gets the container decoded and the
-two-factor verify runs as before. Legacy v1/v2 clear-JSON containers still
-verify for compatibility; **all new seals are v3 envelopes**.
+Server environment variables (PORT, HOST, FRONTEND_DIST, AUDIT_LOG, USERS_FILE, QDS_EVENT_LOG, TRENT_SEED) are documented in [`docs/PROJECT_HANDBOOK.md`](docs/PROJECT_HANDBOOK.md).
 
-Inside the envelope, the container packs: file metadata + SHA-256, an
-**HMAC-SHA256 tag over (metadata ‖ file bytes) under the QKD session key**, a
-fresh per-seal nonce, the payload encrypted with **AES-256-GCM** (the
-metadata is bound as GCM *associated data*, so a swapped document with an
-intact body fails decryption), a **key commitment**, and the **audit-ledger
-Merkle root at seal time**.
-
-- Flip **one byte** anywhere — file or metadata — and verification fails
-  instantly with a note naming the failed check.
-- Verifying under a different session key fails the commitment:
-  *"document sealed under a different session key (key possibly compromised)"*.
-- Legacy v1 containers (XOR keystream payload) still verify for compatibility;
-  new seals are always v3 opaque envelopes.
-
-### 4 · Secure peer-to-peer transfer (real laptops + simulated route)
-
-**Real laptop-to-laptop transfer** (`POST /api/doc/send`): the sender's server
-seals the file into a v3 envelope and POSTs the encrypted container to the
-recipient's server (`peer_url`) over HTTP, addressed by username (`to_user`);
-it lands in the recipient's **inbox** (`/api/doc/inbox`) for one-click
-verification — and the sender keeps a separate **outbox** record, so sent
-copies never pollute the inbox. Only the AES-GCM ciphertext crosses the
-network — without the QKD session key the peer sees nothing (the
-`/api/doc/wire-proof` endpoint computes the wire entropy live: ~8.0 bits/byte
-= indistinguishable from random). Both accounts can also live on one server
-(local user-to-user delivery) or span two laptops (`HOST=0.0.0.0` exposes the
-API on the LAN); the claim-code **relay deposit** flow covers users on
-different networks who can't dial each other directly.
-
-**Simulated transfer portal** (`POST /api/doc/transfer`): pick a file, set
-hops + noise, **Send**. The portal runs seal → transmit over the relay route
-(per-hop sifting, noise flips and Eve events streaming into a terminal-style
-log with node labels) → unseal → verify on Bob's side, emitting an SSE
-`transfer_log` event per stage. Every stage is also an entry in the Merkle
-ledger — the demo proves the features compose.
-
-**Attack Lab** (`POST /api/doc/attack`): Mallory captures a container and runs
-tamper-bytes / swap-metadata / re-seal-under-her-key / truncate; forwarding the
-forgery to Bob's verification always ends in **REJECTED** with the exact failed
-check, and every attempt lands in the audit ledger as an `attack` event.
-
-### 5 · Cryptographic Merkle-tree audit ledger (forensics)
-
-The answer to *"how do you prove a signature wasn't forged three months
-ago?"*. Every seal, verification, tamper flag, transfer, quorum unlock,
-attack attempt, and QDS event is appended to a **hash-chained, append-only
-ledger** (`audit` crate): each leaf hashes its own content *plus the previous
-leaf* (v2 encoding: length-prefixed fields so field boundaries are
-unambiguous), so retroactive editing cascades to the root. A **Merkle root**
-commits to the whole history; **inclusion proofs** (sibling hashes + side
-labels) let anyone verify one entry against the root without the full log —
-and `.qsig` containers pin the root they were sealed under. `verify_chain`
-re-derives the whole structure and names the exact entry where tampering
-occurred. **The ledger persists as JSONL and reloads on startup**, so the
-chain (and its non-repudiation story) survives process restarts. The
-dashboard ledger panel has a per-row **proof** button that renders and
-re-verifies the inclusion proof live.
-
-### 6 · Interactive TUI dashboard
-
-```bash
-cargo run -p tui
-```
-
-A ratatui terminal dashboard running the *same* engine as the web UI —
-live QBER sparkline (240-sample rolling window), progress gauge, 3-way
-verdict, relay route with per-hop stats, document vault (seal / verify /
-tamper / quorum demos), Merkle audit tail with chain-intact status, and a
-pipeline log. Keys: `1/2/3` scenario · `n/N` noise ±1% · `r/R` relay hops ·
-`s/v/t/w` vault demos · `Q` quit. Works in Windows Terminal, PowerShell and
-POSIX terminals; runs over SSH with zero browser dependency.
-
-### 7 · Multi-party threshold authorization (k-of-m signatures)
-
-Enterprise-grade quorum authorization over the seal key: **Shamir secret
-sharing** (byte-wise, GF(251), one random degree-(k−1) polynomial per key
-byte). Each of m officers holds one share plus a public commitment; any k
-shares reconstruct via Lagrange interpolation, and any k−1 leak **zero
-information** (one point short of the polynomial — information-theoretic,
-not policy).
-
-- Enable **Shamir quorum seal** (k-of-m) in the Vault, seal, then toggle
-  officers: fewer than k → *"unlock rejected — only N valid shares"*;
-  k of them → *"unlocked via quorum k-of-m"*, recorded in the ledger.
-- **Cross-account unlock**: officers are real user accounts — each logs in on
-  any laptop and **pledges** their share to the sealant from their own
-  session; k pledges reconstruct the key server-side and the seal opens.
-  The pledge flow unseals the v3 envelope with the reconstructed key before
-  the two-factor verify, so envelopes and quorum compose.
-- Officer commitments let the server validate presented shares without
-  holding them.
-- Documented subtlety: byte 31 of the key is masked into GF(251)
-  (< 2 bits of entropy lost) so field arithmetic is exact.
-
-## Architecture
+## Repository layout
 
 ```
-sih26141/
-├── quantum/    Six-state prepare-and-measure QKD core
-│                 • QuantumKeyGenerator  — Alice's Pauli eigenstate prep
-│                 • ChannelSession       — incremental transmission (streaming)
-│                 • simulate_six_state_transmission(_ratio) — batch simulation
-│                 • privacy_amplification — SHA-256 key compression
-├── qds/        Teleportation-based QDS (see docs/QDS_MATH_MODEL.md)
-│                 • BellPair / teleport_bit / PauliOp — entanglement + corrections
-│                 • Trent — notary center: key setup, nonces, ledger
-│                 • sign / verify — teleportation signing + statistical verification
-│                 • attacks — forgery, impersonation, replay, channel tampering,
-│                            unauthorized verification (5 classes)
-│                 • six_state — Weng-style six-state non-orthogonal-encoding QDS:
-│                            Pauli eigenstate preparation, conclusive-bit logic,
-│                            threshold-rule attack classifier
-│                 • noisy — Hoeffding-bounded c1/c2 thresholds for noisy channels
-│                 • metrics — repeatable evaluation: verification accuracy,
-│                            detection rate, false positives/negatives, forgery
-│                            probability, per-operation wall-clock timings
-│                 • forgery probability — theory 4^(-qλ) + Monte-Carlo validation
-├── detection/  ThreatDetector with two-sided Hoeffding bound:
-│                 ε = √(ln(2/δ) / 2n), dynamic threshold = base + ε
-│                 3-way classification: secure / degraded / under attack
-├── attacks/    Intercept-resend eavesdropping scenario wrappers (QKD layer)
-├── audit/      Merkle-tree append-only audit ledger: hash-chained entries,
-│                 Merkle root, inclusion proofs, chain re-verification
-├── sealing/    .qsig document containers: SHA-256 + QKD-key HMAC binding,
-│                 masked payload, Shamir k-of-m secret sharing (GF(251))
-├── crypto/     HMAC-SHA256 message authentication over the derived key
-├── main_app/   CLI demo binary (QKD pipeline)
-├── server/     Axum REST + SSE API: /api/run, /api/simulate, /api/events,
-│               /api/qds/{setup,sign,verify,attacks,forgery-analysis,events},
-│               /api/auth/{register,login,logout,me,users} (multi-user accounts),
-│               /api/doc/{qds/key,seal,verify,open,quorum/*,transfer,send,
-│               receive,inbox,outbox,wire-proof,relay/*,attack,attack-theater,
-│               session}, /api/audit/*
-│               + persistent JSONL logs (qds_events.jsonl, audit_log.jsonl,
-│               users.json) — audit chain reloads on startup
-├── tui/        ratatui terminal dashboard: live QBER sparkline, relay route,
-│               document vault, Merkle audit tail (`cargo run -p tui`)
-├── frontend/   React + TypeScript + Recharts dashboard (Vite): live QKD
-│               monitor + QDS Signature Lab + Doc Vault + Transfer Portal
-├── tests/      Workspace integration tests (QKD pipeline)
-├── docs/       FEATURES_V2.md (the seven v2 features in depth)
-│               PROJECT_GUIDE.md (full theory + walkthrough)
-│               QDS_MATH_MODEL.md (formal model)
-│               JUDGING_BOOK.md (consolidated judging-round reference)
-│               JUDGE_PITCH.md (presentation playbook)
-│               DASHBOARD_RUN_GUIDE.md (how to run the dashboard)
-│               DASHBOARD_GUIDE.md (every dashboard element explained)
-│               VIDEO_SCRIPT.md (3-minute demo video script)
-└── scripts/    run_simulations.sh — build, test, demo, serve
+├── quantum/        six-state QKD model: Pauli states, channel, relays, CHSH
+├── pa/             privacy amplification: Toeplitz extractor, entropy accounting
+├── detection/      Hoeffding/Chernoff bounds, dynamic thresholds
+├── qds/            teleportation + six-state QDS, attacks, metrics, temporal trap
+├── crypto/         shared primitives
+├── sealing/        .qsig containers: AES-256-GCM, commitments, Shamir quorum
+├── audit/          hash chain, Merkle root, inclusion proofs
+├── attacks/        QKD-channel attack scenarios
+├── server/         Axum API + static dashboard hosting
+├── main_app/       CLI demo binary
+├── tui/            terminal UI
+├── tests/          cross-crate integration tests
+└── frontend/       React 19 + TypeScript + Vite dashboard
 ```
 
-## Live deployment (no local install needed)
+## Documentation
 
-The dashboard is already deployed and running — use this for the judging round
-and demo video unless you specifically want to run locally.
+| Document | Purpose |
+|---|---|
+| [`docs/DELIVERABLES.md`](docs/DELIVERABLES.md) | Clause-by-clause audit against the official problem statement |
+| [`docs/SIGNIQ_WHITEPAPER.md`](docs/SIGNIQ_WHITEPAPER.md) | Full technical whitepaper: formal models, proofs, evaluation |
+| [`docs/PROJECT_HANDBOOK.md`](docs/PROJECT_HANDBOOK.md) | Architecture, API reference, data formats, configuration |
+| [`docs/DASHBOARD_MANUAL.md`](docs/DASHBOARD_MANUAL.md) | Panel-by-panel user manual for the web dashboard |
+| [`docs/QDS_MATH_MODEL.md`](docs/QDS_MATH_MODEL.md) | Formal mathematical model of the teleportation QDS |
+| [`docs/PAPERS.md`](docs/PAPERS.md) | Paper → mechanism → code → test literature map |
+| `target/docs-pdf/*.pdf` | Branded PDF editions of the four documents — regenerate with `cd frontend && npm install && node ../scripts/build-docs-pdf.mjs` |
 
-| Layer | Hosted at | What it is |
-|---|---|---|
-| Frontend (React dashboard) | **Vercel** — see repo Settings → Pages, or the Vercel project URL | Static build of `frontend/dist`, served globally |
-| Backend (Rust API server) | **Render** — see the Render dashboard for the service URL | Axum REST + SSE API, auto-restarts on push |
+## Verification
 
-The frontend on Vercel proxies `/api/*` to the Render backend, so one browser
-tab gets both layers. If the backend restarts (cold start on first hit, or a
-deploy), the first request may take a few extra seconds — after that it's
-live.
+```sh
+cargo test --workspace                              # 21 test binaries, all pass
+cd frontend && npm run build && npm run lint        # dashboard build + lint
 
-### Local fallback (if you need to run it yourself)
-
-Requires Rust (windows-gnu toolchain works, no MSVC needed) and Node.js ≥ 18.
-
-```bash
-# one-time: build the dashboard (only needed for local runs)
-cd frontend && npm install && npm run build && cd ..
-
-# start API + dashboard on http://127.0.0.1:8080
-PORT=8080 cargo run -p server
+# Reproduce the evaluation numbers above against a fresh isolated instance:
+cargo build -p server
+PORT=8090 AUDIT_LOG=target/scratch/audit.jsonl QDS_EVENT_LOG=target/scratch/qds.jsonl \
+USERS_FILE=target/scratch/users.json target/debug/server.exe &
+node scripts/smoke-isolated.mjs                     # 47/47 checks
 ```
 
-Or everything at once (build + tests + CLI demo + dashboard):
+## License & team
 
-```bash
-./scripts/run_simulations.sh
-```
-
-Frontend development mode with hot reload (proxies /api to :8080):
-
-```bash
-cd frontend && npm run dev     # http://localhost:5173
-```
-
-## API
-
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/api/health` | GET | Liveness probe |
-| `/api/server-info` | GET | Actual bound port (differs from the request only after a port fallback) |
-| `/api/run` | POST | QKD simulation run: `key_length`, `base_threshold`, `intercept_ratio` (optional), `message`, `seed`, `pace_ms` |
-| `/api/simulate` | POST | Sweep over `intercept_ratios` (up to 32 values) |
-| `/api/events` | GET | SSE stream: `progress` / `result` / `done` events |
-| `/api/qds/setup` | POST | Generate Trent/Alice Bell-pair key material (`qubit_count`, `lambda`) |
-| `/api/qds/sign` | POST | Sign a message via teleportation; Bob verifies on delivery |
-| `/api/qds/verify` | POST | Manually verify a (message, signature, nonce) triple |
-| `/api/qds/attacks` | GET | Run forgery + impersonation + replay + channel tampering (tamper_fraction query param) + unauthorized verification, get verdicts |
-| `/api/qds/forgery-analysis` | GET | Monte-Carlo vs theory (4^−qλ) forgery probabilities, λ-scaling |
-| `/api/qds/metrics` | GET | Repeatable performance evaluation: verification accuracy, detection rates, false alarms, forgery probability, timings (trials, seed params) |
-| `/api/qds/events` | GET | Recent security events (also persisted to `qds_events.jsonl`) |
-| `/api/auth/register` | POST | Create an account (username, password ≥ 6 chars; PBKDF2-hashed at rest) |
-| `/api/auth/login` | POST | Verify credentials, get a bearer token (memory-only session table) |
-| `/api/auth/logout` | POST | Drop the presented token |
-| `/api/auth/me` | GET | Who am I (requires token) |
-| `/api/auth/users` | GET | Registered usernames (the send-panel address book) |
-| `/api/doc/session` | GET | Current user's key state: has_key, key commitment, quorum info |
-| `/api/doc/qds/key` | POST | **Derive QDS key** — six-state QDS key generation (optional `seed`); this key seals/unlocks documents |
-| `/api/doc/seal` | POST | Seal an uploaded file (base64 `content_b64`, ≤ 5 MB) into a `.qsig` container; optional `use_quorum` + k-of-m params; embeds a teleport-QDS signature |
-| `/api/doc/verify` | POST | Verify a `.qsig` container (`container_b64`) against the user's session keys (single flipped byte ⇒ instant failure) |
-| `/api/doc/open` | POST | **Unlock & download** — verifies the embedded QDS signature via Trent, decrypts the AES-256-GCM payload, returns the original file |
-| `/api/doc/quorum` | GET | Officer share view for the quorum-unlock demo |
-| `/api/doc/quorum/distribute` | POST | Cross-account multiparty: deliver officer shares to named user accounts (holders never see the bytes) |
-| `/api/doc/quorum/pledge` | POST | An officer pledges their distributed share from their own login |
-| `/api/doc/quorum/unlock` | POST | Present k officer shares to reconstruct the key and unlock the container |
-| `/api/doc/transfer` | POST | Simulated P2P transfer over the relay route; emits per-stage SSE `transfer_log` events |
-| `/api/doc/send` | POST | **Real** transfer: seal + deliver to `to_user` (local inbox) or `peer_url` (remote laptop `/api/doc/receive`) |
-| `/api/doc/receive` | POST | Peer-side intake: files an inbound container into the addressed user's inbox |
-| `/api/doc/inbox` | GET | List the logged-in user's inbox (`?full=false` for metadata only) |
-| `/api/doc/inbox/verify` | POST | Verify one inbox item — a tampered or substituted container fails here with the exact reason |
-| `/api/doc/inbox/{id}` | DELETE | Delete one of your received items |
-| `/api/doc/outbox` | GET | List what **you sent** (kept separate from the inbox) |
-| `/api/doc/outbox/{id}` | DELETE | Delete one of your sent items |
-| `/api/doc/wire-proof` | GET | **Proof of protection in transit** — what actually crossed the network: ciphertext sample, entropy estimate, SHA-256 before/after |
-| `/api/doc/relay/deposit` | POST | Cross-LAN transfer: deposit a sealed container into the cloud relay, get a `XXXX-XXX` claim code |
-| `/api/doc/relay/claim` | POST | Pick up a relay deposit by claim code (works across different LANs/networks) |
-| `/api/doc/relay/inbox` | GET | List your relay pickups |
-| `/api/doc/attack` | POST | Mallory's tamper/swap_meta/reseal/truncate modes (demonstrates cryptographic rejection) |
-| `/api/doc/attack-theater` | POST | **Real-time staged attack** — step-by-step: capture → inspect wire → tamper → forward → victim's live rejection report |
-| `/api/doc/events` | GET | SSE: live transfer-log + attack events |
-| `/api/audit/events` | GET | Audit ledger entries + current Merkle root |
-| `/api/audit/proof?seq=N` | GET | Merkle inclusion proof for entry N |
-| `/api/audit/verify` | GET | Re-derive the whole chain; names the entry where tampering occurred |
-| `/api/audit/clear` | POST | **DEV ONLY** — clear the ledger; requires the `DEV_TOKEN` env var (403 without it) |
-
-```bash
-# Local server example (replace with your Render URL for the deployed backend):
-curl -X POST localhost:8080/api/run \
-  -H 'Content-Type: application/json' \
-  -d '{"key_length": 3000, "seed": 42, "pace_ms": 0}'
-```
-
-### Three-laptop demo (accounts + P2P + rejected attack)
-
-The video scenario, runnable on one machine (three processes) or three real
-laptops — see `.freebuff/run.md` for launchers and a scripted end-to-end:
-
-1. **Laptop A — Alice:** register `alice`, press **Derive QDS key** (Seed
-   = 424242) in the Vault, then seal a document.
-2. **Laptop B — Bob:** register `bob`, **Derive QDS key** with the **same
-   seed** (identical distilled key), leave the dashboard open.
-3. **Laptop A → B:** Peer-to-Peer panel → recipient `bob` + Bob's
-   `http://<bob-lan-ip>:8080` → **Send to laptop**. The encrypted container
-   lands in Bob's inbox; he clicks **verify** → ✓ accepted.
-4. **Laptop C — Mallory:** register `mallory`, open the **Attack Lab**, load
-   the captured `.qsig`, pick an attack mode, **forward to Bob** → every mode
-   is **REJECTED** with the exact failed check (GCM tag, commitment, hash).
-5. All of it — seals, deliveries, rejections, attacks — is on the Merkle
-   audit ledgers of the respective machines, each verifiable with
-   `/api/audit/verify`.
-
-> Shared-seed keys are a demo convention (both laptops derive keys from the
-> same six-state QDS seed); a production deployment would transport one-time
-> pads over the QKD channel itself. Self-hosting multiple servers: run each
-> with the same `TRENT_SEED` env var (e.g. `424242`) so embedded QDS
-> signatures verify across machines.
-
-### Using the deployed stack
-
-Point `curl` (or any HTTP client) at the Render backend URL instead of
-`localhost:8080`. The Vercel frontend does this automatically — the only thing
-to verify before the round is that the Render service is live (green status in
-the Render dashboard) and that the Vercel deployment is the latest commit.
-
-## Port fallback & dashboard discovery (local runs only)
-
-If the requested port (default 8080) is held by another process or blocked by a
-Windows reserved port range (os error 10013 — common with Apache/Hyper-V on
-Windows), the server falls back to the next ports (up to +10) instead of
-panicking, and:
-
-1. writes `frontend/dist/server-port.json` stating the actual port, and
-2. exposes it at `/api/server-info`.
-
-The local dashboard auto-discovers this: when its same-origin health check fails it
-reads the manifest, then probes adjacent ports — the "API offline" pill turns
-green on its own within one poll (≤10 s). To free 8080 permanently, stop the
-Apache service (`services.msc`) or run on another port: `$env:PORT=8090`.
-
-For the Vercel + Render deployment, port handling is on the platform side —
-Vercel routes `/api/*` to the Render service URL configured in the frontend
-build settings, and Render assigns its own public URL. If the Render service is
-down or redeploying, the dashboard will show the API-offline pill until it
-comes back.
-
-## What the simulation shows
-
-- **Secure channel** — sifted keys match exactly; QBER 0.00%; a 256-bit key is
-  distilled via SHA-256 privacy amplification and used to HMAC-authenticate a
-  message.
-- **Intercept-resend attack** — Eve measures and resends qubits; wrong-basis
-  measurements disturb the state, driving QBER to ≈ 1/3. The Hoeffding bound
-  flags the channel and key distillation is aborted.
-- **Partial eavesdropping** — QBER ≈ intercept_ratio / 3 (see the sweep chart);
-  detection fires once measured QBER crosses base + ε(n).
-- **Channel degradation (feature 2)** — with fiber noise n% (no attack), QBER
-  settles near n%: if it stays below noise-floor + ε(n) the verdict is
-  *secure*; between that line and the attack line (25%) the dashboard shows a
-  **Channel Degradation Warning** instead of a breach.
-- **Relay routes (feature 1)** — with k relays each link sifts independently
-  (~1/3 survival per link), so the sifted fraction ≈ (1/3)^(k+1); per-link
-  stats and interception events render in the route view.
-
-## TUI dashboard (feature 6)
-
-```bash
-cargo run -p tui
-```
-
-Live QBER sparkline, progress gauge, relay route with per-hop stats, document
-vault (seal / verify / tamper / quorum), Merkle audit tail, and a pipeline log.
-Keys: `1/2/3` scenario · `n/N` noise ±1% · `r/R` relay hops · `s/v/t/w` vault
-actions · `Q` quit. Works on Windows Terminal, PowerShell, and POSIX terminals.
-
-## Tests
-
-```bash
-cargo test --workspace
-```
-
-Covers the end-to-end secure pipeline, attack detection, input validation, the
-partial-intercept ratio semantics (0.0 ≡ secure, 1.0 ≡ full attack, 0.3 ⇒
-intermediate QBER), relay-route sifting factors and per-link interception
-accounting, the 3-way noise/attack classifier, .qsig seal→verify round-trips
-(single-byte tamper detection, wrong-key commitment rejection), Shamir
-k-of-m split/reconstruct (k−1 shares fail), Merkle inclusion proofs and chain
-re-verification, the six-state QDS scheme (honest acceptance, forgery /
-impersonation / tampering / unauthorized-verifier rejection, click-rate ≈
-1/6), noisy-channel thresholds, and the performance evaluation (accuracy >
-0.99, deterministic reproduction, per-class detection).
-
-> Educational prototype — the privacy-amplification step is simplified
-> (fixed SHA-256 rather than a universal₂ hash sized to estimated entropy and
-> leakage), and there is no error-correction/reconciliation stage.
+Built by **Team Prometheus** for SIH26141. Team member profiles are in the dashboard's dossier (flame mark in the hero). This repository is an educational prototype; no warranty of fitness for any security purpose is given or implied.

@@ -148,6 +148,7 @@ fn run_teleport_trials(
             correction_bits: guess,
             nonce: trent.issue_nonce(),
             key_commitment: sig.key_commitment.clone(),
+            temporal: None,
         };
         let fr = verify(message.as_bytes(), &forged, &mut trent, 0.0);
         t_attack += t0.elapsed().as_micros();
@@ -164,6 +165,7 @@ fn run_teleport_trials(
             correction_bits: sig.correction_bits.clone(),
             nonce: trent.issue_nonce(),
             key_commitment: sig.key_commitment.clone(),
+            temporal: sig.temporal.clone(),
         };
         let ir = verify(other.as_bytes(), &transplanted, &mut trent, 0.0);
         if ir.accepted {
@@ -180,6 +182,7 @@ fn run_teleport_trials(
             correction_bits: sig.correction_bits.clone(),
             nonce: sig.nonce,
             key_commitment: sig.key_commitment.clone(),
+            temporal: sig.temporal.clone(),
         };
         let rr = verify(message.as_bytes(), &replay, &mut trent, 0.0);
         if rr.accepted {
@@ -204,6 +207,7 @@ fn run_teleport_trials(
             correction_bits: bits,
             nonce: trent.issue_nonce(),
             key_commitment: sig.key_commitment.clone(),
+            temporal: None,
         };
         let tr = verify(message.as_bytes(), &tampered, &mut trent, 0.0);
         if tr.accepted {
