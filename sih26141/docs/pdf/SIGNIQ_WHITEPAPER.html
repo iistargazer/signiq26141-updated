@@ -1,0 +1,382 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+:root { --ink:#1c1a17; --dim:#5d574c; --gold:#8a6d2f; --gold-deep:#6d541f; --line:#d8d2c4; --panel:#f7f4ec; }
+@page { size: A4; margin: 20mm 16mm 24mm 16mm; }
+* { box-sizing: border-box; }
+body { font-family: Georgia, 'Times New Roman', serif; color: var(--ink); font-size: 10.5pt; line-height: 1.55; margin: 0; }
+h1, h2, h3, h4 { font-family: 'Segoe UI', Arial, sans-serif; color: var(--ink); line-height: 1.25; }
+h1 { font-size: 20pt; margin: 0 0 10pt; }
+h2 { font-size: 14.5pt; margin: 24pt 0 8pt; padding-bottom: 5pt; border-bottom: 1.6px solid var(--gold); }
+h2, h3 { break-after: avoid; }
+h3 { font-size: 11.5pt; margin: 16pt 0 6pt; color: var(--gold-deep); }
+h4 { font-size: 10.5pt; margin: 12pt 0 4pt; }
+p { margin: 6pt 0; }
+a { color: var(--gold-deep); text-decoration: none; }
+strong { color: #14120f; }
+code, pre { font-family: Consolas, 'Courier New', monospace; }
+code { font-size: 8.8pt; background: var(--panel); padding: 1pt 3pt; border-radius: 3px; }
+pre { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--gold); border-radius: 6px; padding: 9pt 11pt; font-size: 7.6pt; line-height: 1.35; white-space: pre-wrap; overflow-wrap: break-word; break-inside: avoid; }
+pre code { background: none; padding: 0; font-size: inherit; }
+blockquote { border-left: 3px solid var(--gold); background: var(--panel); margin: 10pt 0; padding: 7pt 12pt; color: var(--dim); break-inside: avoid; border-radius: 0 6px 6px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 8.9pt; margin: 8pt 0; break-inside: auto; }
+th, td { border: 1px solid var(--line); padding: 4pt 6pt; text-align: left; vertical-align: top; overflow-wrap: break-word; }
+th { background: #efe8d6; font-family: 'Segoe UI', Arial, sans-serif; font-size: 8.4pt; color: #3d3628; border-bottom: 1.6px solid var(--gold); }
+tr { break-inside: avoid; }
+thead { display: table-header-group; }
+hr { border: none; border-top: 1px solid var(--line); margin: 14pt 0; }
+ul, ol { margin: 6pt 0; padding-left: 18pt; }
+li { margin: 2.5pt 0; }
+img { max-width: 100%; }
+/* ---- Cover page ---- */
+.cover-page { height: 247mm; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; page-break-after: always; }
+.cover-page .flame { width: 92px; height: 92px; margin-bottom: 10pt; }
+.cover-page .k { font-family: 'Segoe UI', Arial, sans-serif; font-size: 9pt; letter-spacing: 3.4pt; color: var(--gold); text-transform: uppercase; margin: 0 0 6pt; }
+.cover-page .t { font-family: 'Segoe UI', Arial, sans-serif; font-size: 30pt; font-weight: 600; letter-spacing: 1pt; margin: 0; }
+.cover-page .rule { width: 40mm; border: none; border-top: 2px solid var(--gold); margin: 14pt auto; }
+.cover-page .d { color: var(--dim); font-size: 10.5pt; max-width: 122mm; line-height: 1.6; margin: 0; }
+.cover-page .meta { margin-top: 26pt; font-family: 'Segoe UI', Arial, sans-serif; font-size: 9.5pt; color: var(--ink); letter-spacing: 0.6pt; }
+.cover-page .meta .sub { color: var(--dim); font-size: 8.5pt; margin-top: 3pt; }
+/* ---- Per-page footer (Chrome repeats position:fixed elements on every page;
+        it is parked inside the 24mm bottom @page margin so nothing overlaps) ---- */
+.page-footer { position: fixed; bottom: -17mm; left: 0; right: 0; text-align: center;
+  font-family: 'Segoe UI', Arial, sans-serif; font-size: 7.8pt; color: var(--dim); }
+.page-footer b { color: var(--gold-deep); font-weight: 600; }
+</style></head>
+<body>
+  <div class="cover-page">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="flame" fill="none" role="img" aria-label="Team Prometheus flame">
+  <path
+    d="M12 2.5c1.8 2.6 1.2 4.4.2 5.9-.9 1.4-1.9 2.8-1.4 4.9.4 1.7 1.8 2.7 1.8 2.7s-.5-1.6.4-3c.7-1.1 1.9-1.7 2.3-3.3 1.5 1.6 2.6 3.9 2.2 6.2-.5 2.7-2.8 4.6-5.5 4.6s-5-2-5.4-4.7C6 12 9.3 9.4 9.8 6.4c.1-.9 0-1.9-.2-2.9 1 .1 1.8.4 2.4 1Z"
+    stroke="#c9a45c"
+    stroke-width="1.4"
+    stroke-linejoin="round"
+  />
+  <circle cx="12" cy="17" r="1.6" fill="#c9a45c" opacity="0.85" />
+</svg>
+
+    <div class="k">TECHNICAL WHITEPAPER</div>
+    <div class="t">SigniQ</div>
+    <hr class="rule">
+    <p class="d">Formal models of the six-state QKD layer, the teleportation-based QDS protocol, the statistical threat-detection engine, and the seeded evaluation.</p>
+    <div class="meta">TEAM PROMETHEUS · SIH26141<div class="sub">Quantum-secured document signatures · classical software simulation · 2026-09-29</div></div>
+  </div>
+<h2>Abstract</h2>
+<p>SigniQ is a classical software simulation of a quantum-secured document pipeline that implements a teleportation-based quantum digital signature (QDS) protocol together with a threat-detection layer built exclusively on quantum principles and statistics — Pauli eigenstate preparation, projective measurement, and closed-form concentration bounds — with no artificial intelligence or machine learning components of any kind. Signatures are constructed from genuine Bell-measurement outcomes produced by a statevector teleportation engine; whole-signature forgery requires guessing every Bell outcome, giving a forgery probability of 4^(−qλ) (≈ 1.5×10⁻⁵ at default parameters, tunable to ≈ 2.9×10⁻³⁹ at q=16, λ=4). Documents are sealed in AES-256-GCM <code>.qsig</code> containers and delivered peer-to-peer or through k-of-m consensus rings, with every security-relevant event appended to a hash-chained Merkle audit ledger with inclusion proofs. In seeded attack batteries over 120 trials per scheme, the system achieves 100% verification accuracy, 100% detection rate, and a 0.0% false-accept rate across five attack classes (forgery, impersonation, replay, channel tampering, unauthorized verification), while a simulated CHSH Bell test certifies the honest channel at S = 2.847 ± 0.007. This document maps each claim to its implementing source; all quantum behavior is software simulation, and all results are measurements of the implemented model rather than statements about physical devices.</p>
+<h2>Contents</h2>
+<ol>
+<li><a href="#1-introduction">Introduction</a></li>
+<li><a href="#2-system-architecture">System architecture</a></li>
+<li><a href="#3-the-six-state-qkd-layer">The six-state QKD layer</a></li>
+<li><a href="#4-teleportation-based-quantum-digital-signatures">Teleportation-based quantum digital signatures</a></li>
+<li><a href="#5-the-threat-detection-layer">The threat-detection layer</a></li>
+<li><a href="#6-document-sealing-and-the-audit-ledger">Document sealing and the audit ledger</a></li>
+<li><a href="#7-evaluation">Evaluation</a></li>
+<li><a href="#8-limitations-and-scope">Limitations and scope</a></li>
+<li><a href="#9-references">References</a></li>
+</ol>
+<hr>
+<h2>1. Introduction</h2>
+<h3>1.1 Problem</h3>
+<p>Public-key signatures (RSA, ECDSA) rest on hardness assumptions that Shor&#39;s algorithm breaks on a large quantum computer. Quantum digital signatures replace those assumptions with information-theoretic ones: security follows from the physics of measurement, not computational difficulty. The SIH26141 problem statement asks for a <em>simulation</em> of a teleportation-based QDS protocol with a statistical threat-detection layer that detects forgery, impersonation, replay, and channel manipulation, reports detection rates and false-accept rates from measurement statistics, and preserves the protocol&#39;s information-theoretic security guarantees — explicitly without AI or ML.</p>
+<h3>1.2 Approach</h3>
+<p>SigniQ implements the full pipeline in a Rust workspace with a React dashboard:</p>
+<ul>
+<li><strong>Keys</strong> from a six-state QKD simulation (Bruß 1998), with Cascade/Winnow error reconciliation and Toeplitz universal₂ privacy amplification sized by the leftover hash lemma.</li>
+<li><strong>Signatures</strong> from a teleportation-based QDS (Gottesman–Chuang 2001 verdict semantics; Weng et al. 2021 six-state messaging), every bit backed by Born-rule Bell-measurement outcomes.</li>
+<li><strong>Detection</strong> from Hoeffding/Chernoff bounds and exact binomial tails over measured statistics — every threshold inspectable, no learned parameters.</li>
+<li><strong>Documents</strong> sealed in AES-256-GCM containers, bound to QDS-derived keys, audited in an RFC 6962-discipline Merkle ledger.</li>
+</ul>
+<h3>1.3 Contributions</h3>
+<ol>
+<li>A clause-by-clause implementation of the problem statement, mapped to source in <code>docs/DELIVERABLES.md</code>.</li>
+<li>A statevector teleportation engine whose per-bit correction record <em>is</em> the signature (7 physics tests including Born-rule statistics and fidelity 1.0).</li>
+<li>A temporal trap binding each signature to a notary&#39;s Lamport clock, entropy salt, and hash-chain link, making replay a <em>sequence</em> failure rather than a lookup miss.</li>
+<li>A reproducible, seeded evaluation harness (<code>scripts/smoke-isolated.mjs</code>, <code>/api/qds/metrics</code>) with confusion-matrix metrics including an explicit false-accept rate.</li>
+</ol>
+<hr>
+<h2>2. System architecture</h2>
+<pre><code>┌────────────────────────────  frontend (React 19 + TS + Vite)  ───────────┐
+│  Live Monitor · QDS Lab · Document Vault · Attack Lab · Ledger · Team    │
+└───────────────▲──────────────────────────────────────────┬──────────────┘
+        SSE + fetch (JSON over HTTP)               static assets
+┌───────────────┴──────────────────────────────────────────▼──────────────┐
+│  server (Axum) — auth, sessions, rate-limits, event streams              │
+└───┬──────────┬───────────┬───────────┬────────────┬───────────┬─────────┘
+    │          │           │           │            │           │
+┌───▼───┐ ┌────▼────┐ ┌────▼────┐ ┌────▼────┐ ┌──────▼─────┐ ┌───▼────┐
+│quantum│ │  qds    │ │sealing  │ │ audit   │ │ detection  │ │  pa    │
+│6-state│ │teleport │ │.qsig    │ │chain +  │ │bounds +    │ │Toeplitz│
+│QKD    │ │+6-state │ │AES-GCM  │ │Merkle   │ │thresholds  │ │+LHL    │
+│       │ │QDS      │ │+Shamir  │ │         │ │            │ │        │
+└───────┘ └─────────┘ └─────────┘ └─────────┘ └────────────┘ └────────┘
+</code></pre>
+<p><strong>Crate responsibilities.</strong> <code>quantum</code> models six-state preparation/transmission (Pauli eigenstates, basis-choice collapse, environmental noise as an independent channel from intercept-resend), relays, decoy states, and the CHSH Bell test. <code>pa</code> implements the Toeplitz extractor and entropy budget. <code>detection</code> implements Hoeffding/Chernoff bounds, exact binomial tails, dynamic thresholds, and finite-key settlement. <code>qds</code> implements both signature schemes (teleportation-based and six-state), the attack battery, the metrics engine, and the temporal trap. <code>sealing</code> owns the <code>.qsig</code> container format. <code>audit</code> owns the hash chain, Merkle root, and inclusion proofs. <code>server</code> binds them behind the REST/SSE API; <code>tui</code> and <code>main_app</code> provide terminal front-ends.</p>
+<p><strong>Trust boundaries.</strong> Raw session key material never leaves the server; the browser receives only key <em>commitments</em>. The audit ledger&#39;s integrity is verifiable by anyone, but its publisher identity is not proven by the ledger itself (§6.3). The signing notary (&quot;Trent&quot;) holds per-session secrets in memory with replay-state snapshotted to disk so restarts never re-arm consumed signatures.</p>
+<hr>
+<h2>3. The six-state QKD layer</h2>
+<h3>3.1 Preparation and sifting</h3>
+<p>Alice prepares each qubit in one of six Pauli eigenstates — <code>PauliBasis</code> ∈ {X, Y, Z} × <code>PauliState</code> ∈ {Positive, Negative} — uniformly at random (<code>quantum/src/lib.rs::generate_eigenstates</code>). Bob measures in a random basis; positions where the bases match are sifted. With three bases the sifting yield is ≈ 1/3 (measured: 20,000 qubits → 6,620 sifted). Bob&#39;s measurement is a projective measurement in his declared basis (<code>qds/src/six_state.rs::projective_measure</code>), collapsing the state per the Born rule.</p>
+<h3>3.2 Channel model and QBER</h3>
+<p>Environmental noise (fiber attenuation/turbulence) is modeled as bit flips <em>in flight</em>, independent of basis; an eavesdropper intercepting fraction f of the traffic (measure-in-random-basis, resend) is wrong about the basis 2/3 of the time and then wrong about the bit half of that, giving QBER → f/3 — 33.3% under full interception (measured: 33.60% at f = 1.0, §7.2). Noise and interception contribute independently, which the sweep endpoint exploits to separate &quot;degraded&quot; from &quot;under attack.&quot;</p>
+<h3>3.3 Finite-key statistics</h3>
+<p>The decision threshold is not a constant. For n sifted samples and confidence 1−δ, the Hoeffding bound gives ε(n, δ) = √(ln(2/δ)/2n); the rejection line is the noise floor plus ε(n), narrowing like a vice as n grows (<code>detection/src/bounds.rs</code>). A verdict is only issued when the sample is statistically <em>settled</em> (<code>finite_key_ok</code>: ε(n) smaller than the gap between decision lines). Channel classification is three-way — secure / degraded / under attack — and a classified-under-attack channel aborts key distillation outright.</p>
+<h3>3.4 Reconciliation and privacy amplification</h3>
+<p>Noisy-but-secure keys are repaired rather than discarded: an opening block sized ≈ 0.73/QBER (Cascade scheduling, Brassard–Salvail 1993), Hamming(7,4) syndromes (Winnow, Buttler et al. 2003) in pass one, then Cascade bisection with doubling blocks over re-permuted orders until a pass finds nothing. Every disclosed parity bit is priced into <code>leakage_bits</code>. Privacy amplification then applies a Toeplitz universal₂ extractor (<code>pa/src/lib.rs</code>): the output length m is chosen so the leftover hash lemma caps Eve&#39;s mutual information at a target ε, charging intercepted positions (each burns one bit of min-entropy under the standard six-state accounting, <code>eve_information_fraction</code> = QBER/3-scaled) and reconciliation leakage. The achieved ε is reported with the key (<code>SecurityAccounting</code> in the run response). A conservative presentation floor of 2⁻³⁰⁰ bounds displayed epsilon values.</p>
+<h3>3.5 Decoy states and the Bell test</h3>
+<p>A decoy-state layer (Hwang 2003; Lo–Ma–Chen 2005) models photon-number statistics and flags photon-number-splitting via the per-photon efficiency ratio η_signal/η_decoy &gt; 2 (<code>estimate_pns</code>); it is a detection layer and does not feed key generation. Independently, every run executes a CHSH Bell test (<code>quantum/src/chsh.rs</code>): entangled pairs measured in the canonical geometry, S computed from outcome correlations with a finite-sample error bar. An honest channel certifies at S ≈ 2.83–2.85 (measured: S = 2.847 ± 0.007 over 160,000 rounds, margin 120.7σ, §7.2); an intercept-resend eavesdropper — even one undiscovered by QBER tuning — caps S ≤ 2 because measurement destroys the entangled correlations. QBER is the statistical detector; the Bell test is the physical one.</p>
+<hr>
+<h2>4. Teleportation-based quantum digital signatures</h2>
+<h3>4.1 The teleportation engine</h3>
+<p><code>qds/src/teleport.rs</code> implements a genuine 3-qubit complex-amplitude statevector: EPR pair preparation (Hadamard ⊗ CNOT), the standard Bell-measurement circuit (CNOT + Hadamard + projective measurement), Born-rule collapse — nothing hard-coded — and conditional Pauli corrections (I / X / Z / ZX) restoring Bob&#39;s state with fidelity 1.0 (verified for basis states, ± states, i-states, and arbitrary complex superpositions). Alice&#39;s Bell outcome — two classical bits — cannot be biased: the test <code>measurement_statistics_follow_the_born_rule</code> asserts each of the four outcomes lands at ≈ 25%.</p>
+<h3>4.2 Signature construction and verification</h3>
+<p>The signer (&quot;Alice&quot;) derives the signature&#39;s correction-bit sequence from actual teleportation outcomes of the message bits. The notary (&quot;Trent,&quot; the Weng-et-al network center role) runs <code>Trent::setup</code> — per-session qubit count q, repetition λ, key material — issues single-use nonces, and records the signature ledger. Verification (<code>qds::verify</code>) applies projective measurement rules to the correction statistics and returns one of three verdicts per Gottesman–Chuang semantics: <strong>1-ACC</strong> (unconditional accept), <strong>0-ACC</strong> (accept for Alice ↔ Bob but not transferable), <strong>REJ</strong> (reject). A second-verifier transferability check (&quot;Charlie consensus&quot;) grades whether a signature survives forwarding.</p>
+<h3>4.3 Forgery probability</h3>
+<p>An attacker who guesses the correction bits at every one of the q·λ signature positions succeeds with probability (1/4)^(q·λ):</p>
+<p>$$P_{\text{forge}} = 4^{-q\lambda}$$</p>
+<p>implemented exactly as <code>theory_forgery_probability(qubit_count, lambda) = 0.25^(qubit_count × λ)</code> (<code>qds/src/lib.rs</code> ~L988). At defaults (q=8, λ=1) this is 4⁻⁸ ≈ 1.53×10⁻⁵; at (16, 4) it is 4⁻⁶⁴ ≈ 2.9×10⁻³⁹. The empirical Monte-Carlo estimate (<code>estimate_forgery_probability</code>) measured 0 successes in 120 trials at (8, 1) (§7.1), consistent with the unit-suite assertion and with a 20,000-trial validation at (1,1) matching 0.25 exactly on earlier builds.</p>
+<h3>4.4 The temporal trap (replay defense)</h3>
+<p>Each signature carries a quantum-entropy timestamp (<code>qds/src/temporal.rs</code>): the notary&#39;s sifting-window sequence number (a Lamport logical clock advanced only on acceptance), an entropy salt distilled from the signing teleportations&#39; Bell outcomes, a hash-chain link H(prev ‖ window ‖ entropy), and a tag welding the timestamp to the exact correction bits. Verification enforces four checks — tag (transplant), chain (forged timestamps), consumed-window sequence (replay), and a freshness horizon — so a replayed signature fails a <em>sequence</em> test (&quot;signature is from the past&quot;), and a forged future timestamp fails the chain check. The trap&#39;s memory persists across restarts via a snapshot file (<code>qds_events.replay-state.json</code>-derived path), so nothing re-arms.</p>
+<h3>4.5 Consensus ring</h3>
+<p>For multiparty workflows (<code>qds/src/consensus.rs</code>), a signature is delivered to m receivers over channels with independent noise draws (a compromised member can be injected at any index); each member re-verifies with full trap semantics, and the ring aggregates an unlock gate (≥ k accepts) and a transfer grade (≥ k 1-ACC). Ring-wide forgery success is bounded by p^k (union bound). k=3-of-5 tolerates one compromised member.</p>
+<hr>
+<h2>5. The threat-detection layer</h2>
+<h3>5.1 No AI/ML — by construction</h3>
+<p>The detection layer contains no training loops, no learned parameters, and no ML dependencies (workspace-wide <code>Cargo.toml</code> grep: zero matches for linfa/candle/tch/ndarray/smartcore/tensorflow/torch/sklearn/xgboost/onnx). Every verdict is a threshold comparison or a closed-form bound applied to measured statistics — inspectable in one screenful of code. This is the problem statement&#39;s &quot;explicitly without any AI or ML&quot; implemented as an architectural property, not a styling choice.</p>
+<h3>5.2 Detection statistics</h3>
+<p>Seeded Monte-Carlo batteries (<code>qds/src/metrics.rs</code>) run each attack class against both signature schemes and tally a confusion matrix over controlled experiments:</p>
+<table>
+<thead>
+<tr>
+<th>Count</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>true_positives</code></td>
+<td>attacks correctly rejected/flagged</td>
+</tr>
+<tr>
+<td><code>false_negatives</code></td>
+<td><strong>attacks wrongly accepted</strong></td>
+</tr>
+<tr>
+<td><code>true_negatives</code></td>
+<td>legitimate signatures correctly accepted</td>
+</tr>
+<tr>
+<td><code>false_positives</code></td>
+<td>legitimate signatures wrongly flagged</td>
+</tr>
+</tbody></table>
+<p>From these, the module derives:</p>
+<ul>
+<li><strong>Detection rate</strong> = TP / (TP + FN) — recall over attack events (<code>detection_rate</code>), also broken out <strong>per attack class</strong> (<code>detection_by_class</code>, <code>ClassDetection::rate</code>).</li>
+<li><strong>False-accept rate</strong> = FN / (FN + TP) — the rate at which attacks are wrongly accepted (<code>false_negative_rate</code>). The field carries the classical &quot;false-negative&quot; name because the matrix treats &quot;attack present&quot; as the positive class; the quantity is exactly the problem statement&#39;s false-accept rate. We state the mapping rather than rename the field.</li>
+<li><strong>False-alarm rate</strong> = FP / (FP + TN) over legitimate events — how often honest signatures are rejected.</li>
+</ul>
+<h3>5.3 Attack coverage</h3>
+<table>
+<thead>
+<tr>
+<th>Attack class</th>
+<th>Simulation</th>
+<th>Detection</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Forgery</td>
+<td>guessed correction bits under a fresh nonce (<code>attempt_forgery</code>, <code>attempt_six_state_forgery</code>)</td>
+<td>session-commitment mismatch; ≈ 75% bit mismatch ⇒ REJ</td>
+</tr>
+<tr>
+<td>Impersonation</td>
+<td>genuine signature transplanted to a different message (<code>attempt_impersonation</code>)</td>
+<td>message-hash binding fails at ≈ half of positions</td>
+</tr>
+<tr>
+<td>Replay</td>
+<td>accepted signature re-presented verbatim (<code>attempt_replay</code>)</td>
+<td>temporal trap: consumed window ⇒ sequence mismatch</td>
+</tr>
+<tr>
+<td>Channel tampering</td>
+<td>fraction-tampered channels (<code>attempt_channel_tampering</code>, QKD scenarios)</td>
+<td>QBER vs dynamic threshold ⇒ abort; mismatch-ratio flag</td>
+</tr>
+<tr>
+<td>Unauthorized verification</td>
+<td>verifier without session key material (<code>attempt_unauthorized_verification</code>)</td>
+<td>no conclusive key material ⇒ flagged before statistics</td>
+</tr>
+</tbody></table>
+<h3>5.4 The confidence engine</h3>
+<p><code>GET /api/stats/bounds</code> exposes the machinery the verdicts ride on: two-sided confidence intervals, the N-scaling threshold curve, REJECT-verdict p-values P(X ≥ k | honest at threshold) with qualitative bands — including an explicit <strong>&quot;undersized&quot;</strong> band when the sample cannot separate honesty from attack, because a detector that knows when it cannot decide is more honest than one that always answers.</p>
+<hr>
+<h2>6. Document sealing and the audit ledger</h2>
+<h3>6.1 The <code>.qsig</code> container</h3>
+<p>Sealing keys are derived from six-state QDS key-generation sessions (<code>server/src/qds_keys.rs</code>, <code>POST /api/doc/qds/key</code>) — the document layer runs on QDS, not raw QKD. The container (<code>sealing/src/lib.rs</code>) is JSON with a <code>QSIG1</code> magic: payload sealed under <strong>AES-256-GCM</strong> (v2) with container metadata bound as associated data (a swapped document with an intact body fails decryption), plus an independent HMAC-SHA256 tag; the current v3 envelope seals the entire container JSON so only the key commitment (a SHA-256 digest) and envelope nonce are visible on disk. Verification comparisons are constant-time; a Shamir k-of-m mode (GF(251)) splits the seal key so below-quorum recovery is cryptographically impossible.</p>
+<h3>6.2 Delivery workflows</h3>
+<p>Peer transfer works laptop-to-laptop (<code>/api/doc/send</code> to a peer URL) or same-server user-addressed; the consensus-ring workflow (<code>/api/doc/ring/send</code>, <code>/api/doc/ring/attest</code>) keeps every inbox item <strong>locked until k attestations</strong> — verified live: open refused at 0/k (&quot;CONSENSUS GATE LOCKED&quot;), permitted at k with byte-exact recovery (§7.3). The attack theater (<code>/api/doc/attack-theater</code>) stages capture → inspect/tamper → forward → recipient rejection as a narrated replay recorded in the ledger.</p>
+<h3>6.3 The audit ledger</h3>
+<p>Every security-relevant event lands in a persistent JSONL ledger (<code>audit/src/lib.rs</code>): domain-separated leaves (<code>AUD1</code> prefix, length-framed), RFC 6962-tagged interior nodes (the Merkle second-preimage defense), a Merkle root, per-event inclusion proofs, and chain verification (<code>GET /api/audit/verify</code>). The dashboard exports a self-contained bundle and verifies it offline in the browser (<code>frontend/src/auditEvidence.ts</code>). <strong>Scope, stated precisely:</strong> the ledger proves internal consistency — append-only ordering and no retro-editing. It does <em>not</em> authenticate the publisher; an expected root must arrive through an independent trusted channel for that. There is deliberately no key-revocation lifecycle: a QKD abort or a rejected signature is not revocation, and adding one casually would create misleading security semantics.</p>
+<hr>
+<h2>7. Evaluation</h2>
+<h3>7.1 Methodology</h3>
+<p>All experiments run against an <strong>isolated scratch instance</strong> (env-var-segregated data files; real runtime data untouched) on the current build, with fixed seeds for reproducibility. QDS metrics: <code>GET /api/qds/metrics?trials=120&amp;seed=42</code>. QKD anchors: <code>POST /api/run {key_length: 20000, seed: 424242}</code>. End-to-end behavior: <code>node scripts/smoke-isolated.mjs</code> (47 checks). Timings are from this machine (debug build) and are indicative only.</p>
+<h3>7.2 Signature-scheme metrics (trials = 120, seed = 42)</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Teleport QDS</th>
+<th>Six-state QDS</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Verification accuracy</td>
+<td>100.0%</td>
+<td>100.0%</td>
+</tr>
+<tr>
+<td>Detection rate (TPR)</td>
+<td>100.0%</td>
+<td>100.0%</td>
+</tr>
+<tr>
+<td><strong>False-accept rate</strong> (missed attacks)</td>
+<td><strong>0.0%</strong></td>
+<td><strong>0.0%</strong></td>
+</tr>
+<tr>
+<td>False-alarm rate (legitimate flagged)</td>
+<td>0.0%</td>
+<td>0.0%</td>
+</tr>
+<tr>
+<td>Per-class detection (forgery / impersonation / replay / channel tampering / unauthorized)</td>
+<td>100% ×5</td>
+<td>100% ×5</td>
+</tr>
+<tr>
+<td>Theoretical forgery probability 4^(−qλ)</td>
+<td>1.53×10⁻⁵ (q=8, λ=1)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Empirical forgery successes</td>
+<td>0 / 120</td>
+<td>0 / 120</td>
+</tr>
+<tr>
+<td>Mean sign / verify time</td>
+<td>41 µs / 18 µs</td>
+<td>—</td>
+</tr>
+</tbody></table>
+<h3>7.3 QKD channel anchors (20,000 qubits, seed 424242)</h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Sifted</th>
+<th>QBER</th>
+<th>Classification</th>
+<th>Key distilled</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Secure channel</td>
+<td>6,620</td>
+<td>0.00%</td>
+<td>secure</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>Full intercept-resend (f = 1.0)</td>
+<td>6,651</td>
+<td>33.60% ≈ 1/3</td>
+<td>under_attack</td>
+<td><strong>aborted</strong></td>
+</tr>
+</tbody></table>
+<p>CHSH Bell test on the secure channel: <strong>S = 2.847 ± 0.007</strong> over 160,000 rounds — certified, margin 120.7σ (theory: 2√2 ≈ 2.828; classical bound: 2).</p>
+<h3>7.4 End-to-end behavior (47/47 checks)</h3>
+<p>The isolated smoke battery verifies, against live endpoints: account provisioning; identical seeded key distillation on two &quot;laptops&quot;; seal → deliver → verify with AES-GCM/HMAC/hash agreement; <strong>all four tamper modes rejected with named causes</strong> (GCM tag mismatch ×3; key-commitment mismatch on reseal); <strong>consensus ring locked at k−1</strong> (&quot;CONSENSUS GATE LOCKED — 0/3 attestations&quot;) and <strong>opened at quorum with byte-exact document recovery</strong>; <strong>all six QDS attack classes rejected</strong> with named temporal/statistical reasons; notary clock monotonicity across signatures (replay-state persistence); metrics consistency; the bounds engine; QDS key derivation; and the audit ledger (chain intact, inclusion proof verified, 135 KB export).</p>
+<h3>7.5 Reproducibility</h3>
+<p>Every seeded experiment reproduces bit-identically given the same seed; unseeded runs use OS CSPRNG randomness. The full battery re-runs with the commands in the repository README&#39;s Verification section.</p>
+<h3>7.6 Worked example: the bounds engine on one measured batch</h3>
+<p>The confidence engine turns a raw measurement count into a defensible verdict in closed form. Running the main binary (<code>cargo run -p main_app</code>, seed 42) produces a real worked instance — full intercept-resend over 1,027 sifted positions, 331 mismatches:</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Computation</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Observed rate</td>
+<td>p̂ = k/n = 331/1027</td>
+<td>0.3223</td>
+</tr>
+<tr>
+<td>Hoeffding slack</td>
+<td>ε = √(ln(2/δ)/2n), δ = 0.01</td>
+<td>0.0508</td>
+</tr>
+<tr>
+<td>Two-sided CI</td>
+<td>p̂ ± ε</td>
+<td>[0.2715, 0.3731]</td>
+</tr>
+<tr>
+<td>Chernoff upper</td>
+<td>p̂(1+γ), γ solved from exp(−p̂γ²/(2+γ)) = δ/2</td>
+<td>0.3657 (×1.02 sharper than Hoeffding here)</td>
+</tr>
+<tr>
+<td>Verdict p-value</td>
+<td>P(X ≥ 331 | honest at the 0.15 line), exact binomial tail</td>
+<td>1.3×10⁻⁴³ — <strong>Airtight</strong></td>
+</tr>
+</tbody></table>
+<p>The same engine applied to the clean run (0 mismatches in 992) returns an interval of [0, 0.0517] and refuses to over-claim: the rejection p-value is 1.0 and the band is <strong>Undersized</strong> — at this mismatch count the sample cannot separate honesty from attack, so the engine says so instead of pretending (the dynamic threshold has narrowed from 0.4269 at n = 16 to 0.0717 at n = 992). A detector that knows when it cannot decide is the honest baseline the problem statement&#39;s statistical posture demands.</p>
+<h3>7.7 The main binary as a reproducible demonstration</h3>
+<p><code>cargo run -p main_app</code> walks every engine in one seeded pass: (A) secure six-state run → distillation → HMAC binding; (B) intercept-resend → QBER alarm → distillation aborted (stated as a rejected run, not key revocation); (C) Chernoff–Hoeffding dossiers for both channels (§7.6); (D) seal → v3-envelope round-trip → two tamper modes (envelope byte-flip rejected at GCM decryption; inner-payload corruption rejected at integrity) → audit chain verified + Merkle inclusion proof <code>verified=true</code>; (E) the full evaluation sweep of §7.2. It is the fastest end-to-end sanity check that the whole pipeline is wired, and its output is stable for a fixed seed.</p>
+<hr>
+<h2>8. Limitations and scope</h2>
+<ol>
+<li><strong>All quantum behavior is classical software simulation.</strong> No quantum hardware, physical detector, or physical channel participates anywhere in the system.</li>
+<li><strong>Simulation demonstrates statistics; it cannot certify devices.</strong> The protocol&#39;s information-theoretic arguments are preserved in the model; no claim is made about physical deployments.</li>
+<li><strong>The audit ledger proves internal consistency only</strong>, not publisher identity (§6.3).</li>
+<li><strong>No key-revocation lifecycle exists.</strong></li>
+<li><strong>Individual-attack model.</strong> The six-state layer models individual (intercept-resend class) attacks; coherent-attack security is analytic, not simulated. The CHSH layer models the fair-sampling regime (no detection loopholes); detector physics (dead time, afterpulsing, efficiency mismatch) is simplified.</li>
+<li><strong>Idealized Bell-pair fidelity</strong> in the teleportation engine; channel noise enters on the classical side (<code>qds::noisy</code>).</li>
+<li><strong>Metrics are seeded-reproducible, not universal</strong>; timings are machine-specific.</li>
+<li><strong>Educational prototype.</strong> Cryptographic constructions and deployment configuration require review before any production use; deployment itself is prepared but not performed.</li>
+</ol>
+<hr>
+<h2>9. References</h2>
+<ol>
+<li>D. Bruß, &quot;Optimal Eavesdropping in Quantum Cryptography with Six States,&quot; <em>Phys. Rev. Lett.</em> <strong>81</strong>, 3018 (1998). arXiv:quant-ph/9805019.</li>
+<li>C. H. Bennett, G. Brassard, C. Crépeau, U. M. Maurer, &quot;Generalized Privacy Amplification,&quot; <em>IEEE Trans. Inf. Theory</em> <strong>41</strong>, 1915 (1995).</li>
+<li>G. Brassard, L. Salvail, &quot;Secret-Key Reconciliation by Public Discussion,&quot; <em>EUROCRYPT</em> (1993).</li>
+<li>W. T. Buttler, S. K. Lamoreaux, et al., &quot;Fast, Efficient Error Reconciliation for Quantum Cryptography,&quot; <em>Phys. Rev. A</em> <strong>67</strong>, 052303 (2003).</li>
+<li>A. K. Ekert, &quot;Quantum Cryptography Based on Bell&#39;s Theorem,&quot; <em>Phys. Rev. Lett.</em> <strong>67</strong>, 661 (1991).</li>
+<li>A. Acín, N. Gisin, L. Masanes, &quot;From Bell&#39;s Theorem to Secure Quantum Key Distribution,&quot; <em>Nature</em> <strong>549</strong>, 213 (2007).</li>
+<li>B. Hensen et al., &quot;Loophole-Free Bell Inequality Violation…&quot; <em>Nature</em> <strong>526</strong>, 682 (2015).</li>
+<li>W.-Y. Hwang, &quot;Quantum Key Distribution with High Loss…&quot; <em>Phys. Rev. Lett.</em> <strong>91</strong>, 057901 (2003).</li>
+<li>H.-K. Lo, X. Ma, K. Chen, &quot;Decoy State Quantum Key Distribution,&quot; <em>Phys. Rev. Lett.</em> <strong>94</strong>, 230504 (2005).</li>
+<li>W. Hoeffding, &quot;Probability Inequalities for Sums of Bounded Random Variables,&quot; <em>JASA</em> <strong>58</strong>, 13 (1963).</li>
+<li>H. Chernoff, &quot;A Measure of Asymptotic Efficiency for Tests of a Hypothesis Based on the Sum of Observations,&quot; <em>Ann. Math. Stat.</em> <strong>23</strong> (1952).</li>
+<li>C. H. Bennett, G. Brassard, C. Crépeau, R. Jozsa, A. Peres, W. K. Wootters, &quot;Teleporting an Unknown Quantum State via Dual Classical and Einstein-Podolsky-Rosen Channels,&quot; <em>Phys. Rev. Lett.</em> <strong>70</strong>, 1895 (1993).</li>
+<li>D. Gottesman, I. Chuang, &quot;Quantum Digital Signatures,&quot; arXiv:quant-ph/0105032 (2001).</li>
+<li>P. Wallden, V. Dunjko, A. Kent, E. Andersson, &quot;Quantum Digital Signatures with Quantum Key Distribution,&quot; <em>Phys. Rev. A</em> <strong>90</strong>, 012304 (2014).</li>
+<li>A. Weng et al., &quot;Quantum Digital Signature with Six-State States,&quot; <em>npj Quantum Information</em> (2021). arXiv:2104.12059.</li>
+<li>B. Laurie, A. Langley, E. Kasper, E. Messeri, R. Stradling, &quot;Certificate Transparency,&quot; RFC 6962 / RFC 9162 (IETF).</li>
+<li>M. Pease, R. Shostak, L. Lamport, &quot;Reaching Agreement in the Presence of Faults,&quot; <em>JACM</em> <strong>27</strong>(2) (1980).</li>
+<li>R. Renner, &quot;Security of Quantum Key Distribution,&quot; PhD thesis (2005) — finite-key framework.</li>
+</ol>
+<p><em>Companion documents:</em> clause-by-clause deliverables audit (<code>DELIVERABLES.md</code>), literature-to-code map (<code>PAPERS.md</code>), formal QDS model (<code>QDS_MATH_MODEL.md</code>), engineering handbook (<code>PROJECT_HANDBOOK.md</code>), dashboard manual (<code>DASHBOARD_MANUAL.md</code>).</p>
+
+  <div class="page-footer"><b>SigniQ</b> · Team Prometheus · SIH26141 · classical software simulation — no quantum hardware</div>
+</body></html>

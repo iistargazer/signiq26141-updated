@@ -1,19 +1,27 @@
 <p align="center">
-  <img src="docs/assets/prometheus-flame.svg" width="72" alt="Team Prometheus flame" />
+  <img src="sih26141/docs/assets/prometheus-flame.svg" width="84" alt="Team Prometheus flame" />
 </p>
 
 <h1 align="center">SigniQ</h1>
 
 <p align="center">
   <b>Team Prometheus</b> · SIH26141<br/>
-  Quantum-inspired threat detection for digital-signature security — built as an honest, inspectable software simulation.
+  Rust (edition 2021) · React 19 · TypeScript · Vite<br/>
+  Quantum-inspired threat detection for digital-signature security — an honest, inspectable software simulation.
+</p>
+
+<p align="center">
+  📄 <a href="sih26141/docs/pdf/SIGNIQ_WHITEPAPER.pdf"><b>Read the Whitepaper (PDF)</b></a>
+  &nbsp;·&nbsp; <a href="sih26141/docs/pdf/PROJECT_HANDBOOK.pdf">Handbook</a>
+  &nbsp;·&nbsp; <a href="sih26141/docs/pdf/DASHBOARD_MANUAL.pdf">Dashboard Manual</a>
+  &nbsp;·&nbsp; <a href="sih26141/docs/pdf/README.pdf">Overview</a>
 </p>
 
 ---
 
-SigniQ is a classical software simulation of a quantum-secured document pipeline. It pairs a six-state quantum key distribution model with a teleportation-based quantum digital signature protocol, then layers explicit statistical threat detection on top — no AI, no ML: every accept/reject verdict comes from a closed-form bound or threshold applied to measurement statistics. You can seal a document, attack it four different ways, and watch each forgery get rejected for a named, explainable reason.
+SigniQ is a classical software simulation of a quantum-secured document pipeline. It pairs a six-state quantum key distribution model with a teleportation-based quantum digital signature protocol, then layers explicit statistical threat detection on top — **no AI, no ML**: every accept/reject verdict comes from a closed-form bound or threshold applied to measurement statistics. You can seal a document, attack it four different ways, and watch each forgery get rejected for a named, explainable reason.
 
-The problem statement asks for exactly this shape of work: *"a simulation of a teleportation-based quantum digital signature protocol with a threat-detection layer that, explicitly without any AI or ML, uses quantum principles — Pauli eigenstates, projective measurements and statistical analysis of measurement outcomes — to detect forgery, impersonation, replay attacks and quantum channel manipulation by computing forgery probabilities and verification accuracy from measurement statistics, evaluated through attack simulations that show detection rates and false-accept rates while preserving the protocol's information-theoretic security guarantees."* Every clause of that sentence is implemented and mapped to source in [`docs/DELIVERABLES.md`](docs/DELIVERABLES.md).
+The problem statement asks for exactly this shape of work: *"a simulation of a teleportation-based quantum digital signature protocol with a threat-detection layer that, explicitly without any AI or ML, uses quantum principles — Pauli eigenstates, projective measurements and statistical analysis of measurement outcomes — to detect forgery, impersonation, replay attacks and quantum channel manipulation by computing forgery probabilities and verification accuracy from measurement statistics, evaluated through attack simulations that show detection rates and false-accept rates while preserving the protocol's information-theoretic security guarantees."* Every clause of that sentence is implemented and mapped to source in [`sih26141/docs/DELIVERABLES.md`](sih26141/docs/DELIVERABLES.md).
 
 ## What it is / what it is not
 
@@ -24,40 +32,19 @@ The problem statement asks for exactly this shape of work: *"a simulation of a t
 | An educational prototype with reproducible seeded experiments | Production cryptography |
 | A tamper-evident audit ledger proving **internal consistency** | Publisher authentication — an audit root alone doesn't prove *who* published |
 
-## Contents
+## System architecture
 
-- [Quickstart](#quickstart)
-- [How it works](#how-it-works)
-- [Features](#features)
-- [Evaluation results](#evaluation-results)
-- [The audit ledger](#the-audit-ledger)
-- [Limitations](#limitations)
-- [Repository layout](#repository-layout)
-- [Documentation](#documentation)
-- [Verification](#verification)
-- [Deploying](#deploying)
-- [License & team](#license--team)
+SigniQ runs as one Rust service (the Axum API server also hosts the built dashboard) plus the browser client. The pipeline executes in strict causal order — every layer is a classical software model:
 
-## Quickstart
-
-Requirements: **Rust (cargo)** and **Node.js 20+ with npm**.
-
-```sh
-# 1. Build the dashboard
-cd frontend
-npm ci
-npm run build
-cd ..
-
-# 2. Run the API server (serves the built dashboard too)
-cargo run -p server
-```
-
-Open the printed URL — normally `http://127.0.0.1:8080`. For frontend hot reload, run `npm run dev` from `frontend/` while the API server runs. A terminal interface exists too: `cargo run -p tui`.
-
-## How it works
-
-The whole pipeline in one picture (every block is a classical software model):
+| Layer | Component | Crate · entry point | Description |
+|---|---|---|---|
+| 1 | Six-state QKD | `quantum` · `src/lib.rs` | Pauli eigenstate preparation (X/Y/Z × ±1), channel + relay hops + fiber noise, sifting, QBER |
+| 2 | Threat detection | `detection` · `src/lib.rs`, `src/bounds.rs` | Hoeffding/Chernoff confidence intervals, exact binomial tails, dynamic thresholds, verdict p-values |
+| 3 | Key distillation | `pa` · `src/lib.rs` | Reconciliation, Toeplitz universal₂ extraction sized by the leftover-hash lemma; HMAC-SHA256 binding in `crypto` |
+| 4 | Teleportation QDS | `qds` · `src/teleport.rs`, `src/six_state.rs` | Statevector Bell measurement (Born rule), Pauli corrections, 1-ACC/0-ACC/REJ verdicts, temporal replay trap |
+| 5 | Document sealing | `sealing` · `src/lib.rs` | `.qsig` containers: AES-256-GCM, key commitments, Shamir k-of-m quorum |
+| 6 | Delivery & attack lab | `server` · `src/doc_api.rs` | P2P transfer, consensus rings, tamper battery, attack theater replay |
+| 7 | Audit ledger | `audit` · `src/lib.rs` | Hash-chained JSONL, RFC 6962-style Merkle tree, per-event inclusion proofs, offline browser verification |
 
 ```
 ┌──────────────┐  3000 Pauli eigenstates (X/Y/Z × ±1)
@@ -110,7 +97,7 @@ The whole pipeline in one picture (every block is a classical software model):
 
 ## Evaluation results
 
-Measured live on this codebase (isolated scratch instance, Sept 29, 2026; `trials=120, seed=42` — reproducible with the command in [Verification](#verification)):
+Measured live on this codebase (isolated scratch instance; `trials=120, seed=42` — reproducible with the command in [Verification](#verification)):
 
 | Metric | Teleport QDS | Six-state QDS |
 |---|---|---|
@@ -129,6 +116,78 @@ End-to-end behavior in the same run: 4/4 tamper modes rejected with named causes
 
 Every security-relevant action — seal, verify, attack, key derivation, delivery — is appended to a hash-chained JSONL ledger with a Merkle root and per-event inclusion proofs. The dashboard can export a self-contained bundle and verify it offline; `GET /api/audit/verify` re-checks the chain. **Scope, stated plainly:** this proves the ledger's internal consistency. It does not prove *who* published it — that requires an expected root from an independent trusted source. There is deliberately no key-revocation lifecycle: a QKD abort or rejected signature is not revocation.
 
+## Quickstart
+
+Requirements: **Rust (cargo)** and **Node.js 20+ with npm**.
+
+```sh
+# 1. Build the dashboard
+cd sih26141/frontend
+npm ci
+npm run build
+cd ../..
+
+# 2. Run the API server (serves the built dashboard too)
+cd sih26141
+cargo run -p server
+
+# 3. No-server walkthroughs
+cargo run -p main_app   # seeded end-to-end demo of every engine
+cargo run -p tui        # terminal UI
+```
+
+Open the printed URL — normally `http://127.0.0.1:8080`. For frontend hot reload, run `npm run dev` from `sih26141/frontend/` while the API server runs.
+
+## Deploying
+
+| Piece | Where | Status |
+|---|---|---|
+| Dashboard (frontend) | **Vercel** — this repo root's `vercel.json` builds `sih26141/frontend` | deployed |
+| API + full app | **Render** — Blueprint at `sih26141/render.yaml` (Docker build, free plan, `/api/health` check) | apply the Blueprint in the Render dashboard |
+| Link them | Add the Render URL as an `/api/(.*)` rewrite in the root `vercel.json`, push | after Render is live |
+
+**What Docker is for:** the [`Dockerfile`](sih26141/Dockerfile) is the build *recipe Render runs on their servers* (Node builds the dashboard, Rust builds the API, one runtime image serves both with state under `/data`). You never need Docker installed — it is the packaging format that makes the deployment reproducible anywhere.
+
+**24/7 note:** Render's free plan sleeps after ~15 idle minutes (30–60 s cold start) and has no persistent disk; the paid Starter plan removes both limits.
+
+Server environment variables (PORT, HOST, FRONTEND_DIST, AUDIT_LOG, USERS_FILE, QDS_EVENT_LOG, TRENT_SEED) are documented in [`sih26141/docs/PROJECT_HANDBOOK.md`](sih26141/docs/PROJECT_HANDBOOK.md).
+
+## Repository layout
+
+```
+├── README.md              ← this landing page
+├── LICENSE
+├── vercel.json            ← Vercel build config for the dashboard
+└── sih26141/              ← the project workspace
+    ├── quantum/           six-state QKD model: Pauli states, channel, relays, CHSH
+    ├── pa/                privacy amplification: Toeplitz extractor, entropy accounting
+    ├── detection/         Hoeffding/Chernoff bounds, dynamic thresholds
+    ├── qds/               teleportation + six-state QDS, attacks, metrics, temporal trap
+    ├── crypto/            shared primitives (HMAC-SHA256)
+    ├── sealing/           .qsig containers: AES-256-GCM, commitments, Shamir quorum
+    ├── audit/             hash chain, Merkle root, inclusion proofs
+    ├── attacks/           QKD-channel attack scenarios
+    ├── server/            Axum API + static dashboard hosting
+    ├── main_app/          seeded CLI demo binary
+    ├── tui/               terminal UI
+    ├── tests/             cross-crate integration tests
+    ├── frontend/          React 19 + TypeScript + Vite dashboard
+    ├── docs/              whitepaper, handbook, manual, deliverables + pdf/ editions
+    └── scripts/           PDF pipeline, isolated smoke test
+```
+
+## Documentation
+
+| Document | Purpose |
+|---|---|
+| 📄 [Whitepaper (PDF)](sih26141/docs/pdf/SIGNIQ_WHITEPAPER.pdf) · [Handbook (PDF)](sih26141/docs/pdf/PROJECT_HANDBOOK.pdf) · [Manual (PDF)](sih26141/docs/pdf/DASHBOARD_MANUAL.pdf) · [Overview (PDF)](sih26141/docs/pdf/README.pdf) | Print-ready editions of all four documents |
+| [`sih26141/docs/DELIVERABLES.md`](sih26141/docs/DELIVERABLES.md) | Clause-by-clause audit against the official problem statement |
+| [`sih26141/docs/SIGNIQ_WHITEPAPER.md`](sih26141/docs/SIGNIQ_WHITEPAPER.md) | Full technical whitepaper: formal models, proofs, evaluation |
+| [`sih26141/docs/PROJECT_HANDBOOK.md`](sih26141/docs/PROJECT_HANDBOOK.md) | Architecture, API reference, data formats, configuration |
+| [`sih26141/docs/DASHBOARD_MANUAL.md`](sih26141/docs/DASHBOARD_MANUAL.md) | Panel-by-panel user manual for the web dashboard |
+| [`sih26141/docs/QDS_MATH_MODEL.md`](sih26141/docs/QDS_MATH_MODEL.md) | Formal mathematical model of the teleportation QDS |
+| [`sih26141/docs/PAPERS.md`](sih26141/docs/PAPERS.md) | Paper → mechanism → code → test literature map |
+
 ## Limitations
 
 1. **All quantum behavior is classical software simulation.** No quantum hardware, physical detector, or physical channel participates anywhere.
@@ -139,49 +198,10 @@ Every security-relevant action — seal, verify, attack, key derivation, deliver
 6. **Educational prototype** — review cryptographic constructions and deployment configuration before any production use.
 7. **Deployment configuration ships in the repo** (Dockerfile, render.yaml — see [Deploying](#deploying)); it is not itself a security review of the hosting setup.
 
-## Deploying
-
-The repository is deployment-ready: a multi-stage `Dockerfile` builds the dashboard and the Rust server into one image (persistent state under a `/data` volume), and a Render Blueprint (`render.yaml`) describes the single-service deployment with a `/api/health` check. A one-command local rehearsal:
-
-```sh
-docker build -t sih26141 . && docker run -p 8080:8080 sih26141
-```
-
-Server environment variables (PORT, HOST, FRONTEND_DIST, AUDIT_LOG, USERS_FILE, QDS_EVENT_LOG, TRENT_SEED) are documented in [`docs/PROJECT_HANDBOOK.md`](docs/PROJECT_HANDBOOK.md).
-
-## Repository layout
-
-```
-├── quantum/        six-state QKD model: Pauli states, channel, relays, CHSH
-├── pa/             privacy amplification: Toeplitz extractor, entropy accounting
-├── detection/      Hoeffding/Chernoff bounds, dynamic thresholds
-├── qds/            teleportation + six-state QDS, attacks, metrics, temporal trap
-├── crypto/         shared primitives
-├── sealing/        .qsig containers: AES-256-GCM, commitments, Shamir quorum
-├── audit/          hash chain, Merkle root, inclusion proofs
-├── attacks/        QKD-channel attack scenarios
-├── server/         Axum API + static dashboard hosting
-├── main_app/       CLI demo binary
-├── tui/            terminal UI
-├── tests/          cross-crate integration tests
-└── frontend/       React 19 + TypeScript + Vite dashboard
-```
-
-## Documentation
-
-| Document | Purpose |
-|---|---|
-| [`docs/DELIVERABLES.md`](docs/DELIVERABLES.md) | Clause-by-clause audit against the official problem statement |
-| [`docs/SIGNIQ_WHITEPAPER.md`](docs/SIGNIQ_WHITEPAPER.md) | Full technical whitepaper: formal models, proofs, evaluation |
-| [`docs/PROJECT_HANDBOOK.md`](docs/PROJECT_HANDBOOK.md) | Architecture, API reference, data formats, configuration |
-| [`docs/DASHBOARD_MANUAL.md`](docs/DASHBOARD_MANUAL.md) | Panel-by-panel user manual for the web dashboard |
-| [`docs/QDS_MATH_MODEL.md`](docs/QDS_MATH_MODEL.md) | Formal mathematical model of the teleportation QDS |
-| [`docs/PAPERS.md`](docs/PAPERS.md) | Paper → mechanism → code → test literature map |
-| `target/docs-pdf/*.pdf` | Branded PDF editions of the four documents — regenerate with `cd frontend && npm install && node ../scripts/build-docs-pdf.mjs` |
-
 ## Verification
 
 ```sh
+cd sih26141
 cargo test --workspace                              # 21 test binaries, all pass
 cd frontend && npm run build && npm run lint        # dashboard build + lint
 

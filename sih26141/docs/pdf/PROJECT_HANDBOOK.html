@@ -1,0 +1,551 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+:root { --ink:#1c1a17; --dim:#5d574c; --gold:#8a6d2f; --gold-deep:#6d541f; --line:#d8d2c4; --panel:#f7f4ec; }
+@page { size: A4; margin: 20mm 16mm 24mm 16mm; }
+* { box-sizing: border-box; }
+body { font-family: Georgia, 'Times New Roman', serif; color: var(--ink); font-size: 10.5pt; line-height: 1.55; margin: 0; }
+h1, h2, h3, h4 { font-family: 'Segoe UI', Arial, sans-serif; color: var(--ink); line-height: 1.25; }
+h1 { font-size: 20pt; margin: 0 0 10pt; }
+h2 { font-size: 14.5pt; margin: 24pt 0 8pt; padding-bottom: 5pt; border-bottom: 1.6px solid var(--gold); }
+h2, h3 { break-after: avoid; }
+h3 { font-size: 11.5pt; margin: 16pt 0 6pt; color: var(--gold-deep); }
+h4 { font-size: 10.5pt; margin: 12pt 0 4pt; }
+p { margin: 6pt 0; }
+a { color: var(--gold-deep); text-decoration: none; }
+strong { color: #14120f; }
+code, pre { font-family: Consolas, 'Courier New', monospace; }
+code { font-size: 8.8pt; background: var(--panel); padding: 1pt 3pt; border-radius: 3px; }
+pre { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--gold); border-radius: 6px; padding: 9pt 11pt; font-size: 7.6pt; line-height: 1.35; white-space: pre-wrap; overflow-wrap: break-word; break-inside: avoid; }
+pre code { background: none; padding: 0; font-size: inherit; }
+blockquote { border-left: 3px solid var(--gold); background: var(--panel); margin: 10pt 0; padding: 7pt 12pt; color: var(--dim); break-inside: avoid; border-radius: 0 6px 6px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 8.9pt; margin: 8pt 0; break-inside: auto; }
+th, td { border: 1px solid var(--line); padding: 4pt 6pt; text-align: left; vertical-align: top; overflow-wrap: break-word; }
+th { background: #efe8d6; font-family: 'Segoe UI', Arial, sans-serif; font-size: 8.4pt; color: #3d3628; border-bottom: 1.6px solid var(--gold); }
+tr { break-inside: avoid; }
+thead { display: table-header-group; }
+hr { border: none; border-top: 1px solid var(--line); margin: 14pt 0; }
+ul, ol { margin: 6pt 0; padding-left: 18pt; }
+li { margin: 2.5pt 0; }
+img { max-width: 100%; }
+/* ---- Cover page ---- */
+.cover-page { height: 247mm; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; page-break-after: always; }
+.cover-page .flame { width: 92px; height: 92px; margin-bottom: 10pt; }
+.cover-page .k { font-family: 'Segoe UI', Arial, sans-serif; font-size: 9pt; letter-spacing: 3.4pt; color: var(--gold); text-transform: uppercase; margin: 0 0 6pt; }
+.cover-page .t { font-family: 'Segoe UI', Arial, sans-serif; font-size: 30pt; font-weight: 600; letter-spacing: 1pt; margin: 0; }
+.cover-page .rule { width: 40mm; border: none; border-top: 2px solid var(--gold); margin: 14pt auto; }
+.cover-page .d { color: var(--dim); font-size: 10.5pt; max-width: 122mm; line-height: 1.6; margin: 0; }
+.cover-page .meta { margin-top: 26pt; font-family: 'Segoe UI', Arial, sans-serif; font-size: 9.5pt; color: var(--ink); letter-spacing: 0.6pt; }
+.cover-page .meta .sub { color: var(--dim); font-size: 8.5pt; margin-top: 3pt; }
+/* ---- Per-page footer (Chrome repeats position:fixed elements on every page;
+        it is parked inside the 24mm bottom @page margin so nothing overlaps) ---- */
+.page-footer { position: fixed; bottom: -17mm; left: 0; right: 0; text-align: center;
+  font-family: 'Segoe UI', Arial, sans-serif; font-size: 7.8pt; color: var(--dim); }
+.page-footer b { color: var(--gold-deep); font-weight: 600; }
+</style></head>
+<body>
+  <div class="cover-page">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="flame" fill="none" role="img" aria-label="Team Prometheus flame">
+  <path
+    d="M12 2.5c1.8 2.6 1.2 4.4.2 5.9-.9 1.4-1.9 2.8-1.4 4.9.4 1.7 1.8 2.7 1.8 2.7s-.5-1.6.4-3c.7-1.1 1.9-1.7 2.3-3.3 1.5 1.6 2.6 3.9 2.2 6.2-.5 2.7-2.8 4.6-5.5 4.6s-5-2-5.4-4.7C6 12 9.3 9.4 9.8 6.4c.1-.9 0-1.9-.2-2.9 1 .1 1.8.4 2.4 1Z"
+    stroke="#c9a45c"
+    stroke-width="1.4"
+    stroke-linejoin="round"
+  />
+  <circle cx="12" cy="17" r="1.6" fill="#c9a45c" opacity="0.85" />
+</svg>
+
+    <div class="k">PROJECT HANDBOOK</div>
+    <div class="t">SigniQ</div>
+    <hr class="rule">
+    <p class="d">Engineering reference: workspace architecture, configuration, the complete API surface, data formats, testing strategy and operator notes.</p>
+    <div class="meta">TEAM PROMETHEUS · SIH26141<div class="sub">Quantum-secured document signatures · classical software simulation · 2026-09-29</div></div>
+  </div>
+<h2>1. System overview</h2>
+<p>SigniQ is a Rust workspace (edition 2021, 12 crates) behind an Axum HTTP server that also serves a built React dashboard. Quantum protocol behavior — six-state QKD, teleportation, Bell measurements — is <strong>classical software simulation</strong> throughout; nothing here touches quantum hardware. Security-relevant events append to a hash-chained Merkle audit ledger on disk.</p>
+<pre><code>frontend (React 19 + Vite)  ⇄  server (Axum, REST + SSE)  ⇄  crates
+</code></pre>
+<p>Three binaries matter: the server (<code>cargo run -p server</code>), the terminal UI (<code>cargo run -p tui</code>), and the CLI demo (<code>cargo run -p main_app</code>).</p>
+<h2>2. Crate map</h2>
+<table>
+<thead>
+<tr>
+<th>Crate</th>
+<th>Responsibility</th>
+<th>Key items</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>quantum</code></td>
+<td>Six-state QKD model, channel physics</td>
+<td><code>PauliBasis</code>/<code>PauliState</code>, <code>generate_eigenstates</code>, <code>ChannelSession</code>, relays, decoy states, <code>reconcile</code>/<code>reconcile_adaptive</code>, CHSH (<code>src/chsh.rs</code>)</td>
+</tr>
+<tr>
+<td><code>pa</code></td>
+<td>Privacy amplification</td>
+<td><code>Toeplitz::random</code>/<code>multiply</code> (GF(2)), <code>EntropyBudget</code>, <code>distill</code> / <code>distill_seeded</code>, leftover-hash bound (<code>lhl_distance_bound</code>)</td>
+</tr>
+<tr>
+<td><code>detection</code></td>
+<td>Statistical detection engine</td>
+<td>Hoeffding/Chernoff bounds, exact binomial tails (<code>src/bounds.rs</code>), dynamic thresholds, <code>finite_key_ok</code>, <code>eve_information_fraction</code></td>
+</tr>
+<tr>
+<td><code>qds</code></td>
+<td>Quantum digital signatures</td>
+<td><code>teleport.rs</code> (statevector engine, Born-rule collapse), <code>lib.rs</code> (<code>Trent</code>, <code>sign</code>, <code>verify</code>, <code>theory_forgery_probability</code>), <code>six_state.rs</code> (Weng et al. protocol), <code>attacks.rs</code>, <code>metrics.rs</code> (confusion matrix), <code>temporal.rs</code> (replay trap), <code>consensus.rs</code> (ring)</td>
+</tr>
+<tr>
+<td><code>sealing</code></td>
+<td><code>.qsig</code> containers</td>
+<td>AES-256-GCM payload (v2), sealed envelope (v3), key commitments, Shamir GF(251) quorum</td>
+</tr>
+<tr>
+<td><code>audit</code></td>
+<td>Tamper-evident ledger</td>
+<td><code>AuditEntry</code>, hash chain (<code>AUD1</code> leaves), Merkle root (RFC 6962 interior tags), inclusion proofs</td>
+</tr>
+<tr>
+<td><code>attacks</code></td>
+<td>QKD-channel attack scenarios</td>
+<td>intercept-resend fractions, scenario batteries</td>
+</tr>
+<tr>
+<td><code>crypto</code></td>
+<td>Shared primitives</td>
+<td>HMAC, hashing helpers</td>
+</tr>
+<tr>
+<td><code>server</code></td>
+<td>HTTP API + static hosting</td>
+<td>route table (§5), auth (<code>src/auth.rs</code>), QDS state + keys (<code>qds_state.rs</code>, <code>qds_keys.rs</code>), document API (<code>doc_api.rs</code>)</td>
+</tr>
+<tr>
+<td><code>main_app</code></td>
+<td>CLI demo binary</td>
+<td>seeded five-scenario walk: secure QKD → HMAC; intercept-resend → abort; Chernoff–Hoeffding dossiers for both channels; seal → tamper → verify with audit-chain + inclusion-proof checks; full attack-class evaluation sweep (detection / false-accept rates)</td>
+</tr>
+<tr>
+<td><code>tui</code></td>
+<td>Terminal live monitor (ratatui)</td>
+<td>keys: <code>1</code>/<code>2</code>/<code>3</code> or <code>Tab</code> cycle scenario (secure / attack / mixed 30% intercept) · <code>n</code>/<code>N</code> fiber noise −/+ · <code>r</code>/<code>R</code> relay hops −/+ · <code>s</code> seal · <code>v</code> verify · <code>t</code> tamper · <code>w</code> quorum · <code>q</code>/<code>Esc</code> quit</td>
+</tr>
+<tr>
+<td><code>tests</code></td>
+<td>Cross-crate integration</td>
+<td>end-to-end protocol tests</td>
+</tr>
+</tbody></table>
+<h2>3. Build, run, test</h2>
+<p>Prerequisites: Rust (stable, edition 2021) and Node.js 20+ with npm.</p>
+<pre><code class="language-sh"># Frontend (dashboard must be built before the server can serve it)
+cd frontend &amp;&amp; npm ci &amp;&amp; npm run build &amp;&amp; cd ..
+
+# Server — serves the API and the built dashboard
+cargo run -p server                 # http://127.0.0.1:8080 by default
+
+# Terminal UI / CLI demo
+cargo run -p tui
+cargo run -p main_app
+
+# Tests
+cargo test --workspace              # 21 test binaries
+cd frontend &amp;&amp; npm run lint         # oxlint
+</code></pre>
+<p><strong>Frontend dev loop:</strong> <code>npm run dev</code> (Vite) in <code>frontend/</code> while the API server runs; Vite proxies to the API per its config. Production build output lands in <code>frontend/dist/</code>, which the server serves (path overridable, §4).</p>
+<h3>Documentation PDFs</h3>
+<p>The four professional documents (README, whitepaper, handbook, manual) convert to branded print-ready PDFs via one repeatable command (Markdown → marked → Chrome headless print-to-PDF, A4, Prometheus-flame cover page):</p>
+<pre><code class="language-sh">cd frontend &amp;&amp; npm install     # one-time (marked is a devDependency)
+node ../scripts/build-docs-pdf.mjs
+</code></pre>
+<p>Output lands in <code>target/docs-pdf/*.pdf</code> (gitignored). Chrome/Edge is located automatically; override with the <code>CHROME</code> environment variable. The converter renders GFM tables with repeat headers, keeps code blocks and table rows intact across page breaks, and was verified page-by-page against every wide table and the architecture diagram.</p>
+<h2>4. Configuration reference</h2>
+<p>Environment variables read by the server (<code>server/src/main.rs</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>PORT</code></td>
+<td><code>8080</code></td>
+<td>Listen port</td>
+</tr>
+<tr>
+<td><code>HOST</code></td>
+<td>loopback</td>
+<td>Bind address (<code>0.0.0.0</code> for LAN — deliberate act)</td>
+</tr>
+<tr>
+<td><code>FRONTEND_DIST</code></td>
+<td><code>../frontend/dist</code></td>
+<td>Static dashboard directory</td>
+</tr>
+<tr>
+<td><code>AUDIT_LOG</code></td>
+<td><code>audit_log.jsonl</code></td>
+<td>Audit ledger path</td>
+</tr>
+<tr>
+<td><code>QDS_EVENT_LOG</code></td>
+<td><code>qds_events.jsonl</code></td>
+<td>QDS event log path; <strong>its sibling <code>&lt;name&gt;.replay-state.json</code> holds the temporal-trap snapshot</strong></td>
+</tr>
+<tr>
+<td><code>USERS_FILE</code></td>
+<td><code>users.json</code></td>
+<td>Account store (atomic tmp+rename writes)</td>
+</tr>
+<tr>
+<td><code>TRENT_SEED</code></td>
+<td>unset</td>
+<td>Pin the QDS notary&#39;s setup randomness (deterministic demos)</td>
+</tr>
+<tr>
+<td><code>DEVELOPER_TOKEN</code></td>
+<td>unset</td>
+<td>Optional development bypass token</td>
+</tr>
+</tbody></table>
+<p><strong>Isolated instance pattern</strong> (used by the smoke test; never touches real data):</p>
+<pre><code class="language-sh">PORT=8090 AUDIT_LOG=target/scratch/audit.jsonl QDS_EVENT_LOG=target/scratch/qds.jsonl \
+USERS_FILE=target/scratch/users.json target/debug/server.exe
+</code></pre>
+<p>Data files are created by the server in its working directory; runtime JSONL/JSON files are local state and belong in <code>.gitignore</code>.</p>
+<h2>5. API reference</h2>
+<p>Fifty-three routes (<code>server/src</code>). Bearer tokens come from <code>POST /api/auth/login</code>. Document endpoints generally accept an <strong>optional</strong> bearer token — unauthenticated calls operate on the shared session user; authenticated ones are per-user workspaces. Verified per-route in the isolated smoke test (<code>scripts/smoke-isolated.mjs</code>).</p>
+<h3>System &amp; auth</h3>
+<table>
+<thead>
+<tr>
+<th>Method &amp; path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>GET /api/health</code></td>
+<td>Liveness probe</td>
+</tr>
+<tr>
+<td><code>GET /api/server-info</code></td>
+<td>Build/server metadata</td>
+</tr>
+<tr>
+<td><code>POST /api/auth/register</code> · <code>login</code> · <code>logout</code></td>
+<td>Account lifecycle</td>
+</tr>
+<tr>
+<td><code>GET /api/auth/me</code> · <code>users</code></td>
+<td>Session identity; user list</td>
+</tr>
+</tbody></table>
+<h3>QKD simulation</h3>
+<table>
+<thead>
+<tr>
+<th>Method &amp; path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>POST /api/run</code></td>
+<td>Six-state QKD run (scenarios: secure, attack, sweep, blind-challenge…); returns per-scenario results + CHSH Bell test + statistical bounds + security accounting. Distilled secrets become the caller&#39;s session key (never returned).</td>
+</tr>
+<tr>
+<td><code>POST /api/simulate</code></td>
+<td>Channel simulation variants</td>
+</tr>
+<tr>
+<td><code>GET /api/events</code> · <code>GET /api/doc/events</code></td>
+<td>SSE progress streams</td>
+</tr>
+</tbody></table>
+<h3>QDS</h3>
+<table>
+<thead>
+<tr>
+<th>Method &amp; path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>POST /api/qds/setup</code></td>
+<td>Configure notary parameters (q, λ)</td>
+</tr>
+<tr>
+<td><code>POST /api/qds/sign</code> · <code>verify</code></td>
+<td>Sign message / verify signature (temporal-trap enforced)</td>
+</tr>
+<tr>
+<td><code>GET /api/qds/attacks</code></td>
+<td>Six-class attack battery (all must reject)</td>
+</tr>
+<tr>
+<td><code>GET /api/qds/forgery-analysis</code></td>
+<td>Empirical vs theoretical forgery probability</td>
+</tr>
+<tr>
+<td><code>GET /api/qds/metrics?trials=&amp;seed=</code></td>
+<td>Confusion matrices, per-class detection, false-accept/false-alarm rates, timings</td>
+</tr>
+<tr>
+<td><code>GET /api/qds/events</code></td>
+<td>QDS event log</td>
+</tr>
+<tr>
+<td><code>POST /api/qds/consensus-ring</code></td>
+<td>m-receiver consensus with k-of-m gates</td>
+</tr>
+<tr>
+<td><code>POST /api/doc/qds/key</code></td>
+<td>Derive the caller&#39;s document-sealing key from a six-state QDS session (commitment returned, never the key)</td>
+</tr>
+</tbody></table>
+<h3>Documents &amp; transfer</h3>
+<table>
+<thead>
+<tr>
+<th>Method &amp; path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>GET /api/doc/session</code> · <code>GET /api/doc/quorum</code></td>
+<td>Session/quorum state</td>
+</tr>
+<tr>
+<td><code>POST /api/doc/seal</code> · <code>verify</code> · <code>open</code></td>
+<td>Seal file → <code>.qsig</code>; verify container; open (quorum-gated)</td>
+</tr>
+<tr>
+<td><code>POST /api/doc/quorum/distribute</code> · <code>pledge</code> · <code>unlock</code></td>
+<td>Shamir k-of-m workflow</td>
+</tr>
+<tr>
+<td><code>POST /api/doc/send</code> · <code>receive</code></td>
+<td>Peer delivery (same-server user or LAN peer URL)</td>
+</tr>
+<tr>
+<td><code>GET /api/doc/inbox</code> · <code>outbox</code> · <code>DELETE /api/doc/inbox/{id}</code> · <code>DELETE /api/doc/outbox/{id}</code></td>
+<td>Mailboxes</td>
+</tr>
+<tr>
+<td><code>POST /api/doc/inbox/verify</code></td>
+<td>Cryptographic verification of an inbound container</td>
+</tr>
+<tr>
+<td><code>POST /api/doc/transfer</code></td>
+<td>Streaming transfer (SSE narration)</td>
+</tr>
+<tr>
+<td><code>POST /api/doc/attack</code></td>
+<td>Tamper battery: <code>tamper_bytes</code> / <code>swap_meta</code> / <code>reseal</code> / <code>truncate</code></td>
+</tr>
+<tr>
+<td><code>POST /api/doc/attack-theater</code></td>
+<td>Staged capture → tamper → forward → victim-rejection replay</td>
+</tr>
+<tr>
+<td><code>POST /api/doc/ring/send</code> · <code>ring/attest</code></td>
+<td>Consensus-ring delivery + attestation tally</td>
+</tr>
+<tr>
+<td><code>POST /api/doc/relay/deposit</code> · <code>claim</code> · <code>GET /api/doc/relay/inbox</code></td>
+<td>Relay-drop workflow</td>
+</tr>
+<tr>
+<td><code>GET /api/doc/wire-proof</code></td>
+<td>Wire-level proof artifact</td>
+</tr>
+</tbody></table>
+<h3>Audit &amp; statistics</h3>
+<table>
+<thead>
+<tr>
+<th>Method &amp; path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>GET /api/audit/events?limit=</code></td>
+<td>Ledger entries + root</td>
+</tr>
+<tr>
+<td><code>GET /api/audit/verify</code></td>
+<td>Full chain verification</td>
+</tr>
+<tr>
+<td><code>GET /api/audit/root</code></td>
+<td>Current Merkle root</td>
+</tr>
+<tr>
+<td><code>GET /api/audit/proof?seq=</code></td>
+<td>Inclusion proof for one entry</td>
+</tr>
+<tr>
+<td><code>GET /api/audit/export</code></td>
+<td>Portable self-contained bundle (≤ 10,000 entries)</td>
+</tr>
+<tr>
+<td><code>POST /api/audit/clear</code></td>
+<td>Wipe ledger — <strong>destructive, operator-only</strong></td>
+</tr>
+<tr>
+<td><code>GET /api/stats/bounds</code></td>
+<td>Chernoff–Hoeffding confidence engine (intervals, threshold curves, verdict p-values)</td>
+</tr>
+<tr>
+<td><code>POST /api/blind-challenge/start</code> · <code>reveal</code></td>
+<td>Blind statistical challenge demo</td>
+</tr>
+</tbody></table>
+<h2>6. Data formats</h2>
+<h3>6.1 Audit ledger entry (<code>audit/src/lib.rs::AuditEntry</code>)</h3>
+<p>JSONL, one entry per line, append-only:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>seq</code></td>
+<td>1-based sequence number</td>
+</tr>
+<tr>
+<td><code>ts</code></td>
+<td>RFC3339-ish UTC timestamp</td>
+</tr>
+<tr>
+<td><code>kind</code></td>
+<td><code>seal</code> / <code>verify</code> / <code>flag</code> / <code>transfer</code> / <code>quorum</code> / <code>attack</code> / <code>keygen</code> / <code>auth</code> / <code>open</code></td>
+</tr>
+<tr>
+<td><code>label</code></td>
+<td>Actor/action, e.g. <code>alice→bob</code></td>
+</tr>
+<tr>
+<td><code>accepted</code></td>
+<td><code>false</code> = a threat or rejection was recorded</td>
+</tr>
+<tr>
+<td><code>detail</code></td>
+<td>Human-readable line</td>
+</tr>
+<tr>
+<td><code>payload_hash</code></td>
+<td>SHA-256 of the primary artifact (binds log to document/signature)</td>
+</tr>
+<tr>
+<td><code>leaf_hash</code></td>
+<td>Chain link including previous leaf</td>
+</tr>
+<tr>
+<td><code>hash_v</code></td>
+<td>Leaf encoding version (2 = length-prefixed; absent = legacy)</td>
+</tr>
+</tbody></table>
+<p>Leaves are domain-separated (<code>AUD1</code> prefix, length-framed fields); Merkle interior nodes carry the RFC 6962 <code>0x01</code> tag (second-preimage defense). <code>GET /api/audit/verify</code> re-walks the chain; inclusion proofs let any single entry be verified against the root.</p>
+<h3>6.2 <code>.qsig</code> container (<code>sealing/src/lib.rs</code>)</h3>
+<pre><code class="language-text">magic     &quot;QSIG1&quot;
+meta      { name, size, mime, sha256, sealed_at }
+audit_ref { first_seq, last_seq, root }     — Merkle coverage of the sealing events
+payload   { v, scheme, key_commitment, nonce, tag, quorum, ciphertext }
+</code></pre>
+<ul>
+<li><strong>v2 payload:</strong> AES-256-GCM under the canonical session key; container metadata bound as GCM associated data; independent HMAC-SHA256 tag; 12-byte nonce from a fresh 64-bit per-seal nonce.</li>
+<li><strong>v3 envelope:</strong> the container JSON itself is GCM-sealed — on disk only the header, key commitment (a digest), and envelope nonce are visible.</li>
+<li><strong>Quorum mode:</strong> seal key Shamir-split over GF(251); k shares reconstruct; below k it is cryptographically unrecoverable.</li>
+<li>Key commitment = <code>SHA-256(canonical_key)</code> with the final byte reduced into GF(251) — one definition shared by sealing, server, and quorum reconstruction.</li>
+</ul>
+<h3>6.3 Temporal-trap snapshot</h3>
+<p><code>&lt;qds_event_log&gt;.replay-state.json</code> — JSON snapshot of the notary&#39;s consumed nonces, sifting-window sequence, and chain head, rewritten atomically (tmp+rename) after every mutation and restored at boot. A restart must never re-arm a consumed signature; the smoke test asserts the notary clock stays monotone across signatures.</p>
+<h2>7. Frontend architecture</h2>
+<ul>
+<li><strong>Stack:</strong> React 19 + TypeScript + Vite 8; plain CSS design system (<code>src/index.css</code>, &quot;Nocturne&quot;); lint via oxlint.</li>
+<li><strong>Panels</strong> (<code>src/components/</code>): <code>LiveMonitor</code> (SSE progress, charts capped at 240 points, 80 ms throttling), <code>QdsLab</code>, <code>DocVault</code>, <code>AttackLab</code>, <code>TransferPortal</code>, <code>PeerTransfer</code>, <code>LedgerPanel</code> (8 s poll + <code>__ledgerRefresh</code> hook), <code>SweepPanel</code>, <code>StatusCard</code>, <code>ConsensusRing</code>, <code>BlindChallenge</code>, <code>NoiseVsEvePanel</code>, <code>Constellation</code>, <code>Rite</code>, <code>TeleportAnim</code>, <code>GuidedRun</code> (guided tour), <code>Team</code> (dossier), <code>Charts</code> (lazy-loaded Recharts split — keeps the main bundle under the chunk warning).</li>
+<li><strong>API client:</strong> <code>src/api.ts</code>. <strong>Offline evidence:</strong> <code>src/auditEvidence.ts</code> builds a self-contained verifier page from an audit export and verifies bundle-internal consistency in the browser.</li>
+<li><strong>Backgrounds</strong> are canvas-based and visibility/reduced-motion aware.</li>
+</ul>
+<h2>8. Testing strategy</h2>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Location</th>
+<th>What it proves</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Unit tests</td>
+<td>inline per crate (<code>qds</code> teleport physics, <code>detection</code> bounds, <code>pa</code> extractor collisions, <code>sealing</code> GCM/quorum, <code>audit</code> chain/Merkle, <code>temporal</code> trap)</td>
+<td>Each mechanism against its paper&#39;s predicted statistics</td>
+</tr>
+<tr>
+<td>Integration</td>
+<td><code>tests/</code> crate</td>
+<td>Cross-crate protocol flows</td>
+</tr>
+<tr>
+<td>Live smoke</td>
+<td><code>scripts/smoke-isolated.mjs</code></td>
+<td>47 end-to-end checks against a scratch instance (§4 pattern): auth, key distillation, seal/verify, 4-mode tamper rejection, ring k−1/k gates, 6-class QDS battery, metrics, bounds, ledger integrity, export, attack theater</td>
+</tr>
+<tr>
+<td>Frontend</td>
+<td><code>npm run build</code> + <code>npm run lint</code></td>
+<td>Type-clean, lint-clean production bundle</td>
+</tr>
+</tbody></table>
+<p>The older <code>scripts/e2e-*.mjs</code> scripts drive three-laptop scenarios but <strong>create persistent accounts</strong> — run them only against disposable instances.</p>
+<p>The main binary (<code>cargo run -p main_app</code>) is a fifth verification layer: one seeded run that exercises every crate end-to-end and prints the Chernoff–Hoeffding dossier, the seal/tamper/verify round-trip, and the evaluation table — useful as a quick wiring check after refactors.</p>
+<h2>9. Troubleshooting</h2>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Cause &amp; fix</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>cargo build -p server</code> fails with &quot;Access is denied (os error 5)&quot; (Windows)</td>
+<td>A running server is executing <code>target/debug/server.exe</code> and pins the file. Kill the process (<code>taskkill //PID &lt;pid&gt; //F</code>), rebuild, relaunch.</td>
+</tr>
+<tr>
+<td>Dashboard shows 404 for assets</td>
+<td><code>frontend/dist</code> missing or stale — run <code>npm run build</code> in <code>frontend/</code>, or point <code>FRONTEND_DIST</code> at the built directory.</td>
+</tr>
+<tr>
+<td>Port already in use</td>
+<td>Another instance holds <code>PORT</code>; pick a new port or stop the old instance (`netstat -ano</td>
+</tr>
+<tr>
+<td>Ledger restored &quot;N malformed lines&quot;</td>
+<td>A truncated final line (kill during write). The chain verifier reports status; entries before the truncation remain intact.</td>
+</tr>
+<tr>
+<td><code>replay-state restore failed (starting fresh)</code></td>
+<td>Corrupt snapshot — the notary deliberately starts fresh rather than refusing to boot; consumed signatures from before the corruption may be re-verifiable.</td>
+</tr>
+<tr>
+<td>Frontend fetches fail from a different origin</td>
+<td>Use the server-origin page, or configure a proxy (<code>frontend/vercel.json</code> holds a placeholder for split deployments).</td>
+</tr>
+<tr>
+<td>Metrics endpoint slow with high <code>trials</code></td>
+<td>CPU-bound Monte-Carlo; it runs off the async reactor (<code>spawn_blocking</code>) — reduce <code>trials</code> (clamped 50–2000).</td>
+</tr>
+</tbody></table>
+<h2>10. Operator security notes</h2>
+<ul>
+<li>The server binds loopback by default; <code>HOST=0.0.0.0</code> exposes it to the network — an intentional act requiring firewall thought. Deployment configuration (Dockerfile, Render Blueprint) is covered in the repository README&#39;s <em>Deploying</em> section.</li>
+<li>Bearer tokens authenticate workspaces; document endpoints tolerate unauthenticated calls as the <em>shared</em> session user for demo convenience — do not expose that posture beyond a trusted LAN.</li>
+<li>Raw session keys and seal keys never leave the server; clients see commitments.</li>
+<li><code>POST /api/audit/clear</code> is destructive and unauthenticated in the demo posture — restrict it before any shared deployment.</li>
+<li>The audit ledger proves internal consistency only; publisher authentication requires an independently trusted root. There is no key-revocation lifecycle.</li>
+</ul>
+
+  <div class="page-footer"><b>SigniQ</b> · Team Prometheus · SIH26141 · classical software simulation — no quantum hardware</div>
+</body></html>
