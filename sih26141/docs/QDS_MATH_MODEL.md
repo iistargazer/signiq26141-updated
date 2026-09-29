@@ -16,7 +16,7 @@ reference — equations first, code pointers alongside.
 
 | Symbol | Meaning |
 |---|---|
-| $\mathcal{B} = \{\ket{\Phi^+}, \ket{\Phi^-}, \ket{\Psi^+}, \ket{\Psi^-}\}$ | the four Bell states |
+| $\mathcal{B} = \{|Φ⁺⟩, |Φ⁻⟩, |Ψ⁺⟩, |Ψ⁻⟩\}$ | the four Bell states |
 | $P \in \{I, X, Z, XZ\}$ | single-qubit Pauli operations |
 | $m \in \{0,1\}^*$ | the message; $h = \text{SHA-256}(m)$ its digest |
 | $q$ | signature qubits (message-hash bits used) |
@@ -29,7 +29,7 @@ reference — equations first, code pointers alongside.
 Trent prepares $2\,q\lambda$ maximally-entangled pairs in the plus state:
 
 $$
-\ket{\Phi^+} = \tfrac{1}{\sqrt{2}}\left(\ket{00} + \ket{11}\right)
+|Φ⁺⟩ = \tfrac{1}{\sqrt{2}}\left(|00⟩ + |11⟩\right)
 $$
 
 One half of each pair goes to Alice; Trent retains the other half. The
@@ -42,15 +42,15 @@ raw half is conditionally determined (see §3).
 
 ## 3. Quantum teleportation of a payload qubit
 
-Let Alice want to teleport the payload qubit $\ket{\psi} = \alpha\ket{0} + \beta\ket{1}$
+Let Alice want to teleport the payload qubit $|ψ⟩ = \alpha|0⟩ + \beta|1⟩$
 (here: the computational-basis state encoding $x_{ij}$) using her half of a
-$\ket{\Phi^+}$ pair. The joint initial state is
+$|Φ⁺⟩$ pair. The joint initial state is
 
 $$
-\ket{\psi}_1 \otimes \ket{\Phi^+}_{23} =
+|ψ⟩_1 \otimes |Φ⁺⟩_{23} =
 \tfrac{1}{2}\Big[
-\ket{\Phi^+}_{12}\ket{\psi}_3 + \ket{\Phi^-}_{12} X\ket{\psi}_3
-+ \ket{\Psi^+}_{12} Z\ket{\psi}_3 + \ket{\Psi^-}_{12} XZ\ket{\psi}_3
+|Φ⁺⟩_{12}|ψ⟩_3 + |Φ⁻⟩_{12} X|ψ⟩_3
++ |Ψ⁺⟩_{12} Z|ψ⟩_3 + |Ψ⁻⟩_{12} XZ|ψ⟩_3
 \Big]
 $$
 
@@ -59,13 +59,13 @@ four outcomes, uniformly at random and *not choosable by her*:
 
 | Bell outcome | bits $(b_1 b_0)$ | Bob's state | Required Pauli correction |
 |---|---|---|---|
-| $\Phi^+$ | 00 | $\ket{\psi}$ | $I$ |
-| $\Phi^-$ | 01 | $X\ket{\psi}$ | $X$ |
-| $\Psi^+$ | 10 | $Z\ket{\psi}$ | $Z$ |
-| $\Psi^-$ | 11 | $XZ\ket{\psi}$ | $XZ$ |
+| $\Phi^+$ | 00 | $|ψ⟩$ | $I$ |
+| $\Phi^-$ | 01 | $X|ψ⟩$ | $X$ |
+| $\Psi^+$ | 10 | $Z|ψ⟩$ | $Z$ |
+| $\Psi^-$ | 11 | $XZ|ψ⟩$ | $XZ$ |
 
 Alice transmits the two classical bits $(b_1 b_0)$; Bob applies the
-corresponding **Pauli correction** and holds $\ket{\psi}$ exactly. The
+corresponding **Pauli correction** and holds $|ψ⟩$ exactly. The
 unpredictability of the outcome — Alice cannot choose it, Eve cannot predict
 it — is what makes the correction-bit stream signature material.
 

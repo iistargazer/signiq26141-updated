@@ -20,6 +20,9 @@ const INITIAL_ROWS = 60
  */
 export function LedgerPanel({ onLog }: { onLog: (line: string) => void }) {
   const [entries, setEntries] = useState<AuditEntry[]>([])
+  // First-load lifecycle: the panel must never claim "0 entries" while the
+  // (possibly cold-starting) backend has not answered yet.
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [root, setRoot] = useState<string | null>(null)
   const [chainOk, setChainOk] = useState<boolean | null>(null)
   const [proof, setProof] = useState<InclusionProof | null>(null)
@@ -40,8 +43,13 @@ export function LedgerPanel({ onLog }: { onLog: (line: string) => void }) {
         setEntries(r.entries)
         setRoot(r.root ?? null)
         setTotal(r.total ?? r.entries.length)
+        setLoadState('ready')
       })
-      .catch(() => {})
+      .catch(() => {
+        // A failed refresh after a successful load keeps the stale table;
+        // only the very first load escalates to the error state.
+        setLoadState((prev) => (prev === 'loading' ? 'error' : prev))
+      })
     auditApi
       .verifyChain()
       .then((v) => setChainOk(v.ok))
@@ -121,7 +129,7 @@ export function LedgerPanel({ onLog }: { onLog: (line: string) => void }) {
           <span className="chip chip-blue" title={root ?? undefined}>
             root {root ? `${root.slice(0, 12)}…` : '—'}
           </span>
-          <span className="chip chip-gray">{entries.length} entries</span>
+          <span className="chip chip-gray">{loadState === 'loading' ? 'loading…' : `${entries.length} entries`}</span>
         </div>
       </div>
       <p className="panel-hint">
@@ -163,7 +171,18 @@ export function LedgerPanel({ onLog }: { onLog: (line: string) => void }) {
         </div>
       )}
 
-      {entries.length === 0 ? (
+      {loadState === 'loading' ? (
+        <div className="ledger-skeleton" aria-hidden>
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="ledger-skeleton-row" />
+          ))}
+        </div>
+      ) : loadState === 'error' && entries.length === 0 ? (
+        <div className="empty-state" role="status">
+          The audit ledger is unreachable right now — the API server may be starting up or asleep.
+          It retries automatically every few seconds.
+        </div>
+      ) : entries.length === 0 ? (
         <div className="empty-state">No audit events yet — seal, verify, or transfer a document.</div>
       ) : (
         <>

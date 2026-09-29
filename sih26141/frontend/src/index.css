@@ -2903,3 +2903,34 @@ input:focus, select:focus, textarea:focus {
   .audit-export-actions .btn { width: 100%; }
 }
 
+
+/* ---------------------------------------------------------------------------
+   Ledger first-load skeleton (LedgerPanel) — shown until the first fetch
+   resolves so the panel never flashes a fake "0 entries" state.
+--------------------------------------------------------------------------- */
+.ledger-skeleton {
+  display: grid;
+  gap: 8px;
+  padding: 6px 0;
+}
+.ledger-skeleton-row {
+  height: 30px;
+  border-radius: 8px;
+  background: linear-gradient(
+    90deg,
+    rgba(148, 163, 184, 0.08) 25%,
+    rgba(148, 163, 184, 0.18) 37%,
+    rgba(148, 163, 184, 0.08) 50%
+  );
+  background-size: 400% 100%;
+  animation: ledger-shimmer 1.4s ease-in-out infinite;
+}
+.ledger-skeleton-row:nth-child(2n) { width: 92%; }
+.ledger-skeleton-row:nth-child(3n) { width: 96%; }
+@keyframes ledger-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ledger-skeleton-row { animation: none; }
+}
