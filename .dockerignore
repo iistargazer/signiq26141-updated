@@ -1,0 +1,22 @@
+# Docker build-context hygiene for the repo-root Dockerfile (context = the
+# repo root). Render builds from the git checkout, so most of these never
+# reach its context anyway; the exclusions keep LOCAL verification builds
+# fast and keep runtime data out of every build.
+.git
+.cfreebuff
+.freebuff
+AGENTS.md
+history.md
+browser-recordings/
+*.webm
+*.mp4
+sih26141/target
+sih26141/frontend/node_modules
+sih26141/frontend/dist
+sih26141/docs/internal
+sih26141/users.json
+sih26141/audit_log.jsonl
+sih26141/qds_events.jsonl
+sih26141/server-port.json
+sih26141/qds_events.replay-state.json
+sih26141/*.tmp
