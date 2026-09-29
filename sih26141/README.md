@@ -177,7 +177,7 @@ Server environment variables (PORT, HOST, FRONTEND_DIST, AUDIT_LOG, USERS_FILE, 
 | [`docs/DASHBOARD_MANUAL.md`](docs/DASHBOARD_MANUAL.md) | Panel-by-panel user manual for the web dashboard |
 | [`docs/QDS_MATH_MODEL.md`](docs/QDS_MATH_MODEL.md) | Formal mathematical model of the teleportation QDS |
 | [`docs/PAPERS.md`](docs/PAPERS.md) | Paper → mechanism → code → test literature map |
-| `target/docs-pdf/*.pdf` | Branded PDF editions of the four documents — regenerate with `cd frontend && npm install && node ../scripts/build-docs-pdf.mjs` |
+| [`docs/pdf/*.pdf`](docs/pdf/) | Branded PDF editions of the four documents (committed) — regenerate with `node scripts/build-docs-pdf.mjs` |
 
 ## Verification
 

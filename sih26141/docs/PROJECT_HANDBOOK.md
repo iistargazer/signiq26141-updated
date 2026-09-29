@@ -79,7 +79,7 @@ cd frontend && npm install     # one-time (marked is a devDependency)
 node ../scripts/build-docs-pdf.mjs
 ```
 
-Output lands in `target/docs-pdf/*.pdf` (gitignored). Chrome/Edge is located automatically; override with the `CHROME` environment variable. The converter renders GFM tables with repeat headers, keeps code blocks and table rows intact across page breaks, and was verified page-by-page against every wide table and the architecture diagram.
+Output lands in `docs/pdf/*.pdf`, which is committed to the repository so evaluators can download the print editions directly (regenerate any time; the converter keeps the intermediate `.html` alongside). Chrome/Edge is located automatically; override with the `CHROME` environment variable. The converter renders GFM tables with repeat headers, keeps code blocks and table rows intact across page breaks, and was verified page-by-page against every wide table and the architecture diagram.
 
 ## 4. Configuration reference
 
