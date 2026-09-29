@@ -25,7 +25,7 @@ The problem statement asks for exactly this shape of work: *"a simulation of a t
 
 ## What it is / what it is not
 
-| ✅ It is | ❌ It is not |
+|  It is |  It is not |
 |---|---|
 | A classical **simulation** of QKD and teleportation-based QDS | Quantum hardware, a physical channel, or a real detector |
 | Statistical detection: Hoeffding/Chernoff bounds, binomial tails | An AI/ML system — zero ML dependencies (grep-verifiable) |
