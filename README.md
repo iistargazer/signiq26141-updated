@@ -5,7 +5,7 @@
 <h1 align="center">SigniQ</h1>
 
 <p align="center">
-  <b>Team Prometheus</b> · SIH26141<br/>
+  <b>Team Prometheusz</b> · SIH26141<br/>
   Rust (edition 2021) · React 19 · TypeScript · Vite<br/>
   Quantum-inspired threat detection for digital-signature security — an honest, inspectable software simulation.
 </p>
