@@ -1,8 +1,8 @@
-<p align="center"><img src="assets/prometheus-flame.svg" width="56" alt="Team Prometheus flame" /></p>
+<p align="center"><img src="assets/prometheus-flame.svg" width="56" alt="Team Prometheusz flame" /></p>
 
 # SigniQ — Dashboard Manual
 
-**Team Prometheus · SIH26141 · September 29, 2026**
+**Team Prometheusz · SIH26141 · September 29, 2026**
 
 A panel-by-panel guide to the SigniQ web dashboard. Companion documents: the [whitepaper](SIGNIQ_WHITEPAPER.md) (how it works and why), the [handbook](PROJECT_HANDBOOK.md) (APIs and configuration), and the [deliverables audit](DELIVERABLES.md).
 

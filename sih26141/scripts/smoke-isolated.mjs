@@ -1,4 +1,4 @@
-// Isolated smoke test — Team Prometheus verification pass, Sept 29, 2026.
+// Isolated smoke test — Team Prometheusz verification pass, Sept 29, 2026.
 // Run ONLY against a scratch server instance (isolated data files via env vars).
 // Usage: SMOKE_BASE=http://127.0.0.1:8090 node scripts/smoke-isolated.mjs
 const BASE = process.env.SMOKE_BASE || 'http://127.0.0.1:8090'
@@ -51,7 +51,7 @@ async function main() {
   }
 
   head('4 · Seal + same-server delivery + verify')
-  const docText = 'SMOKE TEST — Team Prometheus isolated verification document.'
+  const docText = 'SMOKE TEST — Team Prometheusz isolated verification document.'
   const b64 = s => Buffer.from(s, 'utf8').toString('base64')
   const seal = await call('/api/doc/seal', { token: tokens.alice, body: { name: 'smoke-doc.txt', content_b64: b64(docText), mime: 'text/plain' } })
   const containerB64 = seal.json?.container_b64

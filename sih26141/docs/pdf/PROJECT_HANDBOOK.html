@@ -43,7 +43,7 @@ img { max-width: 100%; }
 </style></head>
 <body>
   <div class="cover-page">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="flame" fill="none" role="img" aria-label="Team Prometheus flame">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="flame" fill="none" role="img" aria-label="Team Prometheusz flame">
   <path
     d="M12 2.5c1.8 2.6 1.2 4.4.2 5.9-.9 1.4-1.9 2.8-1.4 4.9.4 1.7 1.8 2.7 1.8 2.7s-.5-1.6.4-3c.7-1.1 1.9-1.7 2.3-3.3 1.5 1.6 2.6 3.9 2.2 6.2-.5 2.7-2.8 4.6-5.5 4.6s-5-2-5.4-4.7C6 12 9.3 9.4 9.8 6.4c.1-.9 0-1.9-.2-2.9 1 .1 1.8.4 2.4 1Z"
     stroke="#c9a45c"
@@ -57,8 +57,23 @@ img { max-width: 100%; }
     <div class="t">SigniQ</div>
     <hr class="rule">
     <p class="d">Engineering reference: workspace architecture, configuration, the complete API surface, data formats, testing strategy and operator notes.</p>
-    <div class="meta">TEAM PROMETHEUS · SIH26141<div class="sub">Quantum-secured document signatures · classical software simulation · 2026-09-29</div></div>
+    <div class="meta">TEAM PROMETHEUSZ · SIH26141<div class="sub">Quantum-secured document signatures · classical software simulation · 2026-10-02</div></div>
   </div>
+<p>The engineering reference for SigniQ: what every crate does, how to build and configure the system, the complete API surface, data formats, and troubleshooting. Companion documents: the <a href="SIGNIQ_WHITEPAPER.md">whitepaper</a> (formal models and evaluation), the <a href="DASHBOARD_MANUAL.md">dashboard manual</a> (end-user guide), and the <a href="DELIVERABLES.md">deliverables audit</a> (problem-statement compliance).</p>
+<h2>Contents</h2>
+<ol>
+<li><a href="#1-system-overview">System overview</a></li>
+<li><a href="#2-crate-map">Crate map</a></li>
+<li><a href="#3-build-run-test">Build, run, test</a></li>
+<li><a href="#4-configuration-reference">Configuration reference</a></li>
+<li><a href="#5-api-reference">API reference</a></li>
+<li><a href="#6-data-formats">Data formats</a></li>
+<li><a href="#7-frontend-architecture">Frontend architecture</a></li>
+<li><a href="#8-testing-strategy">Testing strategy</a></li>
+<li><a href="#9-troubleshooting">Troubleshooting</a></li>
+<li><a href="#10-operator-security-notes">Operator security notes</a></li>
+</ol>
+<hr>
 <h2>1. System overview</h2>
 <p>SigniQ is a Rust workspace (edition 2021, 12 crates) behind an Axum HTTP server that also serves a built React dashboard. Quantum protocol behavior — six-state QKD, teleportation, Bell measurements — is <strong>classical software simulation</strong> throughout; nothing here touches quantum hardware. Security-relevant events append to a hash-chained Merkle audit ledger on disk.</p>
 <pre><code>frontend (React 19 + Vite)  ⇄  server (Axum, REST + SSE)  ⇄  crates
@@ -152,11 +167,11 @@ cd frontend &amp;&amp; npm run lint         # oxlint
 </code></pre>
 <p><strong>Frontend dev loop:</strong> <code>npm run dev</code> (Vite) in <code>frontend/</code> while the API server runs; Vite proxies to the API per its config. Production build output lands in <code>frontend/dist/</code>, which the server serves (path overridable, §4).</p>
 <h3>Documentation PDFs</h3>
-<p>The four professional documents (README, whitepaper, handbook, manual) convert to branded print-ready PDFs via one repeatable command (Markdown → marked → Chrome headless print-to-PDF, A4, Prometheus-flame cover page):</p>
+<p>The four professional documents (README, whitepaper, handbook, manual) convert to branded print-ready PDFs via one repeatable command (Markdown → marked → Chrome headless print-to-PDF, A4, Prometheusz-flame cover page):</p>
 <pre><code class="language-sh">cd frontend &amp;&amp; npm install     # one-time (marked is a devDependency)
 node ../scripts/build-docs-pdf.mjs
 </code></pre>
-<p>Output lands in <code>target/docs-pdf/*.pdf</code> (gitignored). Chrome/Edge is located automatically; override with the <code>CHROME</code> environment variable. The converter renders GFM tables with repeat headers, keeps code blocks and table rows intact across page breaks, and was verified page-by-page against every wide table and the architecture diagram.</p>
+<p>Output lands in <code>docs/pdf/*.pdf</code>, which is committed to the repository so evaluators can download the print editions directly (regenerate any time; the converter keeps the intermediate <code>.html</code> alongside). Chrome/Edge is located automatically; override with the <code>CHROME</code> environment variable. The converter renders GFM tables with repeat headers, keeps code blocks and table rows intact across page breaks, and was verified page-by-page against every wide table and the architecture diagram.</p>
 <h2>4. Configuration reference</h2>
 <p>Environment variables read by the server (<code>server/src/main.rs</code>):</p>
 <table>
@@ -547,5 +562,5 @@ payload   { v, scheme, key_commitment, nonce, tag, quorum, ciphertext }
 <li>The audit ledger proves internal consistency only; publisher authentication requires an independently trusted root. There is no key-revocation lifecycle.</li>
 </ul>
 
-  <div class="page-footer"><b>SigniQ</b> · Team Prometheus · SIH26141 · classical software simulation — no quantum hardware</div>
+  <div class="page-footer"><b>SigniQ</b> · Team Prometheusz · SIH26141 · classical software simulation — no quantum hardware</div>
 </body></html>

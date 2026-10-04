@@ -43,7 +43,7 @@ img { max-width: 100%; }
 </style></head>
 <body>
   <div class="cover-page">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="flame" fill="none" role="img" aria-label="Team Prometheus flame">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="flame" fill="none" role="img" aria-label="Team Prometheusz flame">
   <path
     d="M12 2.5c1.8 2.6 1.2 4.4.2 5.9-.9 1.4-1.9 2.8-1.4 4.9.4 1.7 1.8 2.7 1.8 2.7s-.5-1.6.4-3c.7-1.1 1.9-1.7 2.3-3.3 1.5 1.6 2.6 3.9 2.2 6.2-.5 2.7-2.8 4.6-5.5 4.6s-5-2-5.4-4.7C6 12 9.3 9.4 9.8 6.4c.1-.9 0-1.9-.2-2.9 1 .1 1.8.4 2.4 1Z"
     stroke="#c9a45c"
@@ -57,8 +57,14 @@ img { max-width: 100%; }
     <div class="t">SigniQ</div>
     <hr class="rule">
     <p class="d">System overview, pipeline architecture, measured evaluation results and quickstart.</p>
-    <div class="meta">TEAM PROMETHEUS · SIH26141<div class="sub">Quantum-secured document signatures · classical software simulation · 2026-09-29</div></div>
+    <div class="meta">TEAM PROMETHEUSZ · SIH26141<div class="sub">Quantum-secured document signatures · classical software simulation · 2026-10-02</div></div>
   </div>
+<p align="center">
+  <img src="docs/assets/prometheus-flame.svg" width="72" alt="Team Prometheusz flame" />
+</p><h1 align="center">SigniQ</h1><p align="center">
+  <b>Team Prometheusz</b> · SIH26141<br/>
+  Quantum-inspired threat detection for digital-signature security — built as an honest, inspectable software simulation.
+</p><hr>
 <p>SigniQ is a classical software simulation of a quantum-secured document pipeline. It pairs a six-state quantum key distribution model with a teleportation-based quantum digital signature protocol, then layers explicit statistical threat detection on top — no AI, no ML: every accept/reject verdict comes from a closed-form bound or threshold applied to measurement statistics. You can seal a document, attack it four different ways, and watch each forgery get rejected for a named, explainable reason.</p>
 <p>The problem statement asks for exactly this shape of work: <em>&quot;a simulation of a teleportation-based quantum digital signature protocol with a threat-detection layer that, explicitly without any AI or ML, uses quantum principles — Pauli eigenstates, projective measurements and statistical analysis of measurement outcomes — to detect forgery, impersonation, replay attacks and quantum channel manipulation by computing forgery probabilities and verification accuracy from measurement statistics, evaluated through attack simulations that show detection rates and false-accept rates while preserving the protocol&#39;s information-theoretic security guarantees.&quot;</em> Every clause of that sentence is implemented and mapped to source in <a href="docs/DELIVERABLES.md"><code>docs/DELIVERABLES.md</code></a>.</p>
 <h2>What it is / what it is not</h2>
@@ -274,8 +280,8 @@ cargo run -p server
 <td>Paper → mechanism → code → test literature map</td>
 </tr>
 <tr>
-<td><code>target/docs-pdf/*.pdf</code></td>
-<td>Branded PDF editions of the four documents — regenerate with <code>cd frontend &amp;&amp; npm install &amp;&amp; node ../scripts/build-docs-pdf.mjs</code></td>
+<td><a href="docs/pdf/"><code>docs/pdf/*.pdf</code></a></td>
+<td>Branded PDF editions of the four documents (committed) — regenerate with <code>node scripts/build-docs-pdf.mjs</code></td>
 </tr>
 </tbody></table>
 <h2>Verification</h2>
@@ -289,7 +295,7 @@ USERS_FILE=target/scratch/users.json target/debug/server.exe &amp;
 node scripts/smoke-isolated.mjs                     # 47/47 checks
 </code></pre>
 <h2>License &amp; team</h2>
-<p>Built by <strong>Team Prometheus</strong> for SIH26141. Team member profiles are in the dashboard&#39;s dossier (flame mark in the hero). This repository is an educational prototype; no warranty of fitness for any security purpose is given or implied.</p>
+<p>Built by <strong>Team Prometheusz</strong> for SIH26141. Team member profiles are in the dashboard&#39;s dossier (flame mark in the hero). This repository is an educational prototype; no warranty of fitness for any security purpose is given or implied.</p>
 
-  <div class="page-footer"><b>SigniQ</b> · Team Prometheus · SIH26141 · classical software simulation — no quantum hardware</div>
+  <div class="page-footer"><b>SigniQ</b> · Team Prometheusz · SIH26141 · classical software simulation — no quantum hardware</div>
 </body></html>

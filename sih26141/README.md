@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="docs/assets/prometheus-flame.svg" width="72" alt="Team Prometheus flame" />
+  <img src="docs/assets/prometheus-flame.svg" width="72" alt="Team Prometheusz flame" />
 </p>
 
 <h1 align="center">SigniQ</h1>
 
 <p align="center">
-  <b>Team Prometheus</b> · SIH26141<br/>
+  <b>Team Prometheusz</b> · SIH26141<br/>
   Quantum-inspired threat detection for digital-signature security — built as an honest, inspectable software simulation.
 </p>
 
@@ -194,4 +194,4 @@ node scripts/smoke-isolated.mjs                     # 47/47 checks
 
 ## License & team
 
-Built by **Team Prometheus** for SIH26141. Team member profiles are in the dashboard's dossier (flame mark in the hero). This repository is an educational prototype; no warranty of fitness for any security purpose is given or implied.
+Built by **Team Prometheusz** for SIH26141. Team member profiles are in the dashboard's dossier (flame mark in the hero). This repository is an educational prototype; no warranty of fitness for any security purpose is given or implied.

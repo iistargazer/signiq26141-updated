@@ -1,10 +1,10 @@
-<p align="center"><img src="assets/prometheus-flame.svg" width="64" alt="Team Prometheus flame" /></p>
+<p align="center"><img src="assets/prometheus-flame.svg" width="64" alt="Team Prometheusz flame" /></p>
 
 # SigniQ — Technical Whitepaper
 
 ### Quantum-Inspired Cyber Threat Detection for Digital Signature Security
 
-**Team Prometheus · SIH26141 · September 29, 2026**
+**Team Prometheusz · SIH26141 · September 29, 2026**
 
 ---
 

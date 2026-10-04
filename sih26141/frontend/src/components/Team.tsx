@@ -68,8 +68,8 @@ export function TeamFlame({ onOpen }: { onOpen: () => void }) {
       onClick={onOpen}
       aria-haspopup="dialog"
       aria-controls="team-dossier-dialog"
-      aria-label="Meet Team Prometheus"
-      title="Meet Team Prometheus"
+      aria-label="Meet Team Prometheusz"
+      title="Meet Team Prometheusz"
     >
       <span className="credits-flame" aria-hidden>
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none">
@@ -83,7 +83,7 @@ export function TeamFlame({ onOpen }: { onOpen: () => void }) {
         </svg>
       </span>
       <span>
-        <span className="credits-team">Team Prometheus</span>
+        <span className="credits-team">Team Prometheusz</span>
         <span className="credits-note">
           quantum-secured documents · <u>meet the team</u>
         </span>
@@ -165,7 +165,7 @@ export function TeamDossier({ open, onClose }: { open: boolean; onClose: () => v
           <div className="team-head-row">
             <div>
               <div className="team-kicker">The people behind SigniQ</div>
-              <h2 id="team-dossier-title" className="team-title">Team Prometheus</h2>
+              <h2 id="team-dossier-title" className="team-title">Team Prometheusz</h2>
             </div>
             <button ref={closeButtonRef} className="team-dismiss" onClick={onClose} aria-label="Close team dossier">
               <span aria-hidden>×</span>

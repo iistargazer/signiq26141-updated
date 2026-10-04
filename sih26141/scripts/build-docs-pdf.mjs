@@ -95,8 +95,8 @@ function toHtml(mdPath, meta) {
     .replace(/^<p align="center"><img[^>]*prometheus-flame[^>]*><\/p>\s*/i, '')
     .replace(/^<h1 align="center">[\s\S]*?<\/h1>\s*/, '')
     .replace(/^# .*$/m, '')
-    .replace(/\*\*Team Prometheus · SIH26141 · \*\*September\s*\d{1,2},\s*2026\*\*/g, '')
-    .replace(/\*\*Team Prometheus · SIH26141 · September\s*\d{1,2},\s*2026\*\*/g, '')
+    .replace(/\*\*Team Prometheusz · SIH26141 · \*\*September\s*\d{1,2},\s*2026\*\*/g, '')
+    .replace(/\*\*Team Prometheusz · SIH26141 · September\s*\d{1,2},\s*2026\*\*/g, '')
   const hrPos = md.indexOf('\n---\n')
   if (hrPos !== -1 && hrPos < 2200) md = md.slice(hrPos + 5)
   md = md.replace(/\]\(#([^)]+)\)/g, '](#$1)')
@@ -113,10 +113,10 @@ function toHtml(mdPath, meta) {
     <div class="t">${escapeHtml(meta.title)}</div>
     <hr class="rule">
     <p class="d">${escapeHtml(meta.desc)}</p>
-    <div class="meta">TEAM PROMETHEUS · SIH26141<div class="sub">Quantum-secured document signatures · classical software simulation · ${today}</div></div>
+    <div class="meta">TEAM PROMETHEUSZ · SIH26141<div class="sub">Quantum-secured document signatures · classical software simulation · ${today}</div></div>
   </div>
 ${body}
-  <div class="page-footer"><b>SigniQ</b> · Team Prometheus · SIH26141 · classical software simulation — no quantum hardware</div>
+  <div class="page-footer"><b>SigniQ</b> · Team Prometheusz · SIH26141 · classical software simulation — no quantum hardware</div>
 </body></html>`
 }
 

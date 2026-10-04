@@ -1,8 +1,8 @@
-<p align="center"><img src="assets/prometheus-flame.svg" width="56" alt="Team Prometheus flame" /></p>
+<p align="center"><img src="assets/prometheus-flame.svg" width="56" alt="Team Prometheusz flame" /></p>
 
 # SigniQ — Project Handbook
 
-**Team Prometheus · SIH26141 · September 29, 2026**
+**Team Prometheusz · SIH26141 · September 29, 2026**
 
 The engineering reference for SigniQ: what every crate does, how to build and configure the system, the complete API surface, data formats, and troubleshooting. Companion documents: the [whitepaper](SIGNIQ_WHITEPAPER.md) (formal models and evaluation), the [dashboard manual](DASHBOARD_MANUAL.md) (end-user guide), and the [deliverables audit](DELIVERABLES.md) (problem-statement compliance).
 
@@ -72,7 +72,7 @@ cd frontend && npm run lint         # oxlint
 
 ### Documentation PDFs
 
-The four professional documents (README, whitepaper, handbook, manual) convert to branded print-ready PDFs via one repeatable command (Markdown → marked → Chrome headless print-to-PDF, A4, Prometheus-flame cover page):
+The four professional documents (README, whitepaper, handbook, manual) convert to branded print-ready PDFs via one repeatable command (Markdown → marked → Chrome headless print-to-PDF, A4, Prometheusz-flame cover page):
 
 ```sh
 cd frontend && npm install     # one-time (marked is a devDependency)

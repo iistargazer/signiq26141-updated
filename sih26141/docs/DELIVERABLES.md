@@ -1,6 +1,6 @@
 # Deliverables & Objectives — clause-by-clause implementation audit
 
-**Audit date:** September 29, 2026 · **Audited by:** Team Prometheus
+**Audit date:** September 29, 2026 · **Audited by:** Team Prometheusz
 **Authoritative requirement (the SIH problem statement, quoted from the brief):**
 
 > **Quantum-Inspired Cyber Threat Detection for Digital Signature Security** — a simulation of a teleportation-based quantum digital signature protocol with a threat-detection layer that, explicitly without any AI or ML, uses quantum principles — Pauli eigenstates, projective measurements and statistical analysis of measurement outcomes — to detect forgery, impersonation, replay attacks and quantum channel manipulation by computing forgery probabilities and verification accuracy from measurement statistics, evaluated through attack simulations that show detection rates and false-accept rates while preserving the protocol's information-theoretic security guarantees.
