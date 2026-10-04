@@ -214,4 +214,4 @@ node scripts/smoke-isolated.mjs                     # 47/47 checks
 
 ## License & team
 
-Built by **Team Prometheus** for SIH26141. Team member profiles are in the dashboard's dossier (flame mark in the hero). This repository is an educational prototype; no warranty of fitness for any security purpose is given or implied.
+Built by **Team Prometheusz** for SIH26141. Team member profiles are in the dashboard's dossier (flame mark in the hero). This repository is an educational prototype; no warranty of fitness for any security purpose is given or implied.
